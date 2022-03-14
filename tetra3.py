@@ -522,18 +522,18 @@ class Tetra3():
         # Filter for maximum number of stars in FOV and doubles
         keep_for_patterns = np.full(star_table.shape[0], False)
         keep_for_verifying = np.full(star_table.shape[0], False)
-        all_star_vectors = star_table[:, 2:5].transpose()
+        all_star_vectors = star_table[:, 2:5]
         # Keep the first one and skip index 0 in loop
         keep_for_patterns[0] = True
         keep_for_verifying[0] = True
         
         # Insert all stars in a KD-tree for fast neighbour lookup
         self._logger.info('Building KD-tree of stars for neigbour lookup')
-        vector_kd_tree = KDTree(all_star_vectors.T)
+        vector_kd_tree = KDTree(all_star_vectors)
         self._logger.info('Tree built, now trimming database to requested star density')
         # Loop over all stars
-        for star_ind in range(1, all_star_vectors.shape[1]): 
-            vector = all_star_vectors[:, star_ind].T
+        for star_ind in range(1, all_star_vectors.shape[0]): 
+            vector = all_star_vectors[star_ind, :]
             within_fov = vector_kd_tree.query_ball_point(vector, max_fov/2)
             
             # Check how many within FOV are already kept, if not enough check dobule star separation
@@ -541,12 +541,12 @@ class Tetra3():
             pattern_in_fov = sum(keep_for_patterns[within_fov])
             if pattern_in_fov < pattern_stars_per_fov:
                 # Check if the new star to insert will violate minimum star separation
-                in_fov = all_star_vectors[:, np.compress(keep_for_patterns[within_fov], within_fov)]
-                if star_min_separation is None or in_fov.shape[1] == 0:
+                in_fov = all_star_vectors[np.compress(keep_for_patterns[within_fov], within_fov), :]
+                if star_min_separation is None or in_fov.shape[0] == 0:
                     # No minimum or no nearby stars kept yet
                     keep_for_patterns[star_ind] = True
                     keep_for_verifying[star_ind] = True
-                elif all(np.dot(vector, in_fov) < np.cos(np.deg2rad(star_min_separation))):
+                elif all(np.dot(vector.T, in_fov.T) < np.cos(np.deg2rad(star_min_separation))):
                     # All kept stars are far enough
                     keep_for_patterns[star_ind] = True
                     keep_for_verifying[star_ind] = True
@@ -554,11 +554,11 @@ class Tetra3():
             verifying_in_fov = sum(keep_for_verifying[within_fov])
             if verifying_in_fov < verification_stars_per_fov:
                 # Check if the new star to insert will violate minimum star separation
-                in_fov = all_star_vectors[:, np.compress(keep_for_verifying[within_fov], within_fov)]
-                if star_min_separation is None or in_fov.shape[1] == 0:
+                in_fov = all_star_vectors[np.compress(keep_for_verifying[within_fov], within_fov),:]
+                if star_min_separation is None or in_fov.shape[0] == 0:
                     # No minimum or no nearby stars kept yet
                     keep_for_verifying[star_ind] = True
-                elif all(np.dot(vector, in_fov) < np.cos(np.deg2rad(star_min_separation))):
+                elif all(np.dot(vector.T, in_fov.T) < np.cos(np.deg2rad(star_min_separation))):
                     # All kept stars are far enough
                     keep_for_verifying[star_ind] = True
 
