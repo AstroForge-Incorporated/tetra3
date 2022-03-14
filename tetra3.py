@@ -94,6 +94,7 @@ from numpy.linalg import norm
 import scipy.ndimage
 import scipy.optimize
 import scipy.stats
+from scipy.spatial import KDTree
 
 _MAGIC_RAND = 2654435761
 _supported_databases = ('bsc5', 'hip_main', 'tyc_main')
@@ -519,32 +520,46 @@ class Tetra3():
             star_table[i,2:5] = vector
                 
         # Filter for maximum number of stars in FOV and doubles
-        keep_for_patterns = [False] * star_table.shape[0]
-        keep_for_verifying = [False] * star_table.shape[0]
+        keep_for_patterns = np.full(star_table.shape[0], False)
+        keep_for_verifying = np.full(star_table.shape[0], False)
         all_star_vectors = star_table[:, 2:5].transpose()
         # Keep the first one and skip index 0 in loop
         keep_for_patterns[0] = True
         keep_for_verifying[0] = True
-        for star_ind in range(1, star_table.shape[0]):
-            vector = star_table[star_ind, 2:5]
-            # Angle to all stars we have kept
-            angs_patterns = np.dot(vector, all_star_vectors[:, keep_for_patterns])
-            angs_verifying = np.dot(vector, all_star_vectors[:, keep_for_verifying])
-            # Check double star limit as well as stars-per-fov limit
-            if star_min_separation is None \
-                    or all(angs_patterns < np.cos(np.deg2rad(star_min_separation))):
-                num_stars_in_fov = sum(angs_patterns > np.cos(max_fov/2))
-                if num_stars_in_fov < pattern_stars_per_fov:
-                    # Only keep if not too many close by already
+        
+        # Insert all stars in a KD-tree for fast neighbour lookup
+        self._logger.info('Building KD-tree of stars for neigbour lookup')
+        vector_kd_tree = KDTree(all_star_vectors.T)
+        self._logger.info('Tree built, now trimming database to requested star density')
+        # Loop over all stars
+        for star_ind in range(1, all_star_vectors.shape[1]): 
+            vector = all_star_vectors[:, star_ind].T
+            within_fov = vector_kd_tree.query_ball_point(vector, max_fov/2)
+            
+            # Check how many within FOV are already kept, if not enough check dobule star separation
+            # limit and add to the database if allowed. First for patterns then for verification.
+            pattern_in_fov = sum(keep_for_patterns[within_fov])
+            if pattern_in_fov < pattern_stars_per_fov:
+                # Check if the new star to insert will violate minimum star separation
+                in_fov = all_star_vectors[:, np.compress(keep_for_patterns[within_fov], within_fov)]
+                if star_min_separation is None or in_fov.shape[1] == 0:
+                    # No minimum or no nearby stars kept yet
                     keep_for_patterns[star_ind] = True
+                elif all(np.dot(vector, in_fov) < np.cos(np.deg2rad(star_min_separation))):
+                    # All kept stars are far enough
+                    keep_for_patterns[star_ind] = True
+
+            verifying_in_fov = sum(keep_for_verifying[within_fov])
+            if verifying_in_fov < verification_stars_per_fov:
+                # Check if the new star to insert will violate minimum star separation
+                in_fov = all_star_vectors[:, np.compress(keep_for_verifying[within_fov], within_fov)]
+                if star_min_separation is None or in_fov.shape[1] == 0:
+                    # No minimum or no nearby stars kept yet
                     keep_for_verifying[star_ind] = True
-            # Secondary stars-per-fov check, if we fail this we will not keep the star at all
-            if star_min_separation is None \
-                    or all(angs_verifying < np.cos(np.deg2rad(star_min_separation))):
-                num_stars_in_fov = sum(angs_verifying > np.cos(max_fov/2))
-                if num_stars_in_fov < verification_stars_per_fov:
-                    # Only keep if not too many close by already
+                elif all(np.dot(vector, in_fov) < np.cos(np.deg2rad(star_min_separation))):
+                    # All kept stars are far enough
                     keep_for_verifying[star_ind] = True
+
         # Trim down star table and update indexing for pattern stars
         star_table = star_table[keep_for_verifying, :]
         pattern_stars = (np.cumsum(keep_for_verifying)-1)[keep_for_patterns]
