@@ -545,9 +545,11 @@ class Tetra3():
                 if star_min_separation is None or in_fov.shape[1] == 0:
                     # No minimum or no nearby stars kept yet
                     keep_for_patterns[star_ind] = True
+                    keep_for_verifying[star_ind] = True
                 elif all(np.dot(vector, in_fov) < np.cos(np.deg2rad(star_min_separation))):
                     # All kept stars are far enough
                     keep_for_patterns[star_ind] = True
+                    keep_for_verifying[star_ind] = True
 
             verifying_in_fov = sum(keep_for_verifying[within_fov])
             if verifying_in_fov < verification_stars_per_fov:
