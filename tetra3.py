@@ -528,9 +528,8 @@ class Tetra3():
         keep_for_verifying[0] = True
         
         # Insert all stars in a KD-tree for fast neighbour lookup
-        self._logger.info('Building KD-tree of stars for neigbour lookup')
+        self._logger.info('Trimming database to requested star density.')
         vector_kd_tree = KDTree(all_star_vectors)
-        self._logger.info('Tree built, now trimming database to requested star density')
         # Loop over all stars
         for star_ind in range(1, all_star_vectors.shape[0]): 
             vector = all_star_vectors[star_ind, :]
@@ -571,57 +570,40 @@ class Tetra3():
         self._logger.info('For verification with at most ' + str(verification_stars_per_fov)
                           + ' stars per FOV and no doubles: ' + str(star_table.shape[0]) + '.')
 
-        self._logger.debug('Building temporary hash table for finding pattern neighbours')
-        temp_coarse_sky_map = {}
-        temp_bins = 4
-        # insert the stars into the hash table
-        for star_id in pattern_stars:
-            vector = star_table[star_id, 2:5]
-            # find which partition the star occupies in the hash table
-            hash_code = tuple(((vector+1)*temp_bins).astype(np.int))
-            # if the partition is empty, create a new list to hold the star
-            # if the partition already contains stars, add the star to the list
-            temp_coarse_sky_map[hash_code] = temp_coarse_sky_map.pop(hash_code, []) + [star_id]
 
-        def temp_get_nearby_stars(vector, radius):
-            """Get nearby from temporary hash table."""
-            # create list of nearby stars
-            nearby_star_ids = []
-            # given error of at most radius in each dimension, compute the space of hash codes
-            hash_code_space = [range(max(low, 0), min(high+1, 2*temp_bins)) for (low, high)
-                               in zip(((vector + 1 - radius) * temp_bins).astype(np.int),
-                                      ((vector + 1 + radius) * temp_bins).astype(np.int))]
-            # iterate over hash code space
-            for hash_code in itertools.product(*hash_code_space):
-                # iterate over the stars in the given partition, adding them to
-                # the nearby stars list if they're within range of the vector
-                for star_id in temp_coarse_sky_map.get(hash_code, []):
-                    if np.dot(vector, star_table[star_id, 2:5]) > np.cos(radius):
-                        nearby_star_ids.append(star_id)
-            return nearby_star_ids
-
-        # generate pattern catalog
+        # Create patterns by finding sequences of stars within the FOV limit and calculating their
+        # edge ratios. First insert everything into a KD-tree then take out one-by-one and find all
+        # remaining patterns.        
         self._logger.info('Generating all possible patterns.')
+        # Tree of all stars for nearest neighbour lookup
+        pattern_kd_tree = KDTree(star_table[:, 2:5])
+        # Stars available for patterning, to start remove those only for verification
+        available_stars = [True if k in pattern_stars else False for k in range(star_table.shape[0])]
+        
         pattern_list = []
         # initialize pattern, which will contain pattern_size star ids
         pattern = [None] * pattern_size
-        for pattern[0] in pattern_stars:  # star_ids_filtered:
+        
+        for (index, pattern[0]) in enumerate(pattern_stars):
+            # Remove star from consideration
+            available_stars[pattern[0]] = False
+            # Find all neighbours within FOV, keep only those not removed
             vector = star_table[pattern[0], 2:5]
-            # find which partition the star occupies in the sky hash table
-            hash_code = tuple(((vector+1)*temp_bins).astype(np.int))
-            # remove the star from the sky hash table
-            temp_coarse_sky_map[hash_code].remove(pattern[0])
-            # iterate over all possible patterns containing the removed star
-            for pattern[1:] in itertools.combinations(temp_get_nearby_stars(vector, max_fov),
-                                                      pattern_size-1):
-                # retrieve the vectors of the stars in the pattern
-                vectors = star_table[pattern, 2:5]
-                # verify that the pattern fits within the maximum field-of-view
-                # by checking the distances between every pair of stars in the pattern
-                if all(np.dot(*star_pair) > np.cos(max_fov)
-                        for star_pair in itertools.combinations(vectors, 2)):
-                    pattern_list.append(pattern.copy())
+            neighbours = pattern_kd_tree.query_ball_point(vector, max_fov)
+            available = [available_stars[i] for i in neighbours]
+            neighbours = np.compress(available, neighbours)
 
+            # Check all possible patterns
+            for pattern[1:] in itertools.combinations(neighbours, pattern_size - 1):
+                # Unpack and measure angle between all vectors
+                vectors = star_table[pattern, 2:5]
+                dots = np.dot(vectors, vectors.T)
+                
+                if dots.min() > np.cos(max_fov):
+                    # Maximum angle is within the FOV limit, append
+                    pattern_list.append(pattern.copy())
+        
+        # Create all pattens by calculating and sorting edge ratios and inserting into hash table
         self._logger.info('Found ' + str(len(pattern_list)) + ' patterns. Building catalogue.')
         catalog_length = 2 * len(pattern_list)
         pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint16)
