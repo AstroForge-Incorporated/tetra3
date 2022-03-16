@@ -389,7 +389,7 @@ class Tetra3():
 
     def generate_database(self, max_fov, save_as=None, star_catalog='bsc5', pattern_stars_per_fov=10,
                           verification_stars_per_fov=20, star_max_magnitude=7,
-                          star_min_separation=.05, pattern_max_error=.005):
+                          star_min_separation=.05, pattern_max_error=.005, use_angles=True):
         """Create a database and optionally save to file. Typically takes 5 to 30 minutes.
 
         Note:
@@ -412,15 +412,19 @@ class Tetra3():
             save_as (str or pathlib.Path, optional): Save catalog here when finished. Calls
                 :meth:`save_database`.
             star_catalog (string, optional): Abbreviated name of star catalog, one of 'bsc5',
-                'hip_main', or 'tyc_main'.
+                'hip_main', or 'tyc_main'. Default 'bsc5'.
             pattern_stars_per_fov (int, optional): Number of stars used for pattern matching in each
-                region of size 'max_fov'.
+                region of size 'max_fov'. Default 10.
             verification_stars_per_fov (int, optional): Number of stars used for verification of the
-                solution in each region of size 'max_fov'.
+                solution in each region of size 'max_fov'. Default 20.
             star_max_magnitude (float, optional): Dimmest apparent magnitude of stars in database.
+                Default 7.
             star_min_separation (float, optional): Smallest separation (in degrees) allowed between
-                stars (to remove doubles).
+                stars (to remove doubles). Default .05.
             pattern_max_error (float, optional): Maximum difference allowed in pattern for a match.
+                Default .005.
+            use_angles (bool, optional): Use faster angle-based edge calculator instead of heritage
+                vector-difference edge calculator. Default True.
 
         Example:
             ::
@@ -607,16 +611,30 @@ class Tetra3():
         self._logger.info('Found ' + str(len(pattern_list)) + ' patterns. Building catalogue.')
         catalog_length = 2 * len(pattern_list)
         pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint16)
-        for pattern in pattern_list:
+        
+        # Indices to extract from dot product matrix (above diagonal)
+        upper_tri_index = np.triu_indices(pattern_size, 1)
+        
+        for (index, pattern) in enumerate(pattern_list):
+            if index % 1000000 == 0 and index > 0:
+                self._logger.info('Inserting pattern number: ' + str(index))
+            
             # retrieve the vectors of the stars in the pattern
             vectors = star_table[pattern, 2:5]
-            # calculate and sort the edges of the star pattern
-            edges = np.sort([np.sqrt((np.subtract(*star_pair)**2).sum())
-                             for star_pair in itertools.combinations(vectors, 2)])
-            # extract the largest edge
-            largest_edge = edges[-1]
-            # divide the edges by the largest edge to create dimensionless ratios
-            edge_ratios = edges[:-1] / largest_edge
+            
+            if use_angles: # New faster algorithm
+                pattern_dot_products = np.dot(vectors, vectors.T)[upper_tri_index]
+                edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
+                edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
+            else: # Use old difference algorithm
+                # calculate and sort the edges of the star pattern
+                edges = np.sort([np.sqrt((np.subtract(*star_pair)**2).sum())
+                                 for star_pair in itertools.combinations(vectors, 2)])         
+                # extract the largest edge
+                largest_edge = edges[-1]
+                # divide the edges by the largest edge to create dimensionless ratios
+                edge_ratios = edges[:-1] / largest_edge
+            
             # convert edge ratio float to hash code by binning
             hash_code = tuple((edge_ratios * pattern_bins).astype(np.int))
             hash_index = _key_to_index(hash_code, pattern_bins, pattern_catalog.shape[0])
@@ -627,13 +645,17 @@ class Tetra3():
                 if not pattern_catalog[index][0]:
                     pattern_catalog[index] = pattern
                     break
+                
         self._logger.info('Finished generating database.')
         self._logger.info('Size of uncompressed star table: %i Bytes.' %star_table.nbytes)
         self._logger.info('Size of uncompressed pattern catalog: %i Bytes.' %pattern_catalog.nbytes)
 
         self._star_table = star_table
         self._pattern_catalog = pattern_catalog
-        self._db_props['pattern_mode'] = 'edge_ratio'
+        if use_angles:
+            self._db_props['pattern_mode'] = 'edge_ratio_angles'
+        else:
+            self._db_props['pattern_mode'] = 'edge_ratio'
         self._db_props['pattern_size'] = pattern_size
         self._db_props['pattern_bins'] = pattern_bins
         self._db_props['pattern_max_error'] = pattern_max_error
@@ -716,6 +738,10 @@ class Tetra3():
         p_size = self._db_props['pattern_size']
         p_bins = self._db_props['pattern_bins']
         p_max_err = self._db_props['pattern_max_error']
+        # Improved extraction speed with angle instead of difference parametrisation
+        use_angles = True if self._db_props['pattern_mode'] == 'edge_ratio_angles' else False
+        self._logger.debug('Using angles for edge ratio pattern: ' + str(use_angles))
+        upper_tri_index = np.triu_indices(p_size, 1)
         # Run star extraction, passing kwargs along
         t0_extract = precision_timestamp()
         star_centroids = get_centroids_from_image(image, max_returned=num_stars, **kwargs)
@@ -729,29 +755,38 @@ class Tetra3():
             center_x = width / 2.
             center_y = height / 2.
             scale_factor = np.tan(fov / 2) / center_x
-            star_vectors = []
-            for (star_y, star_x) in star_centroids:
+            star_vectors = np.zeros((len(star_centroids), 3))
+            for (index, (star_y, star_x)) in enumerate(star_centroids):
                 j_over_i = (center_x - star_x) * scale_factor
                 k_over_i = (center_y - star_y) * scale_factor
                 i = 1. / np.sqrt(1 + j_over_i**2 + k_over_i**2)
                 j = j_over_i * i
                 k = k_over_i * i
-                vec = np.array([i, j, k])
-                star_vectors.append(vec)
+                star_vectors[index, :] = [i, j, k]
+                #vec = np.array([i, j, k])
+                #star_vectors.append(vec)
             return star_vectors
 
         t0_solve = precision_timestamp()
         for image_centroids in _generate_patterns_from_centroids(
                                             star_centroids[:pattern_checking_stars], p_size):
             # compute star vectors using an estimate for the field-of-view in the x dimension
-            pattern_star_vectors = compute_vectors(image_centroids, fov_estimate)
-            # calculate and sort the edges of the star pattern
-            pattern_edges = np.sort([norm(np.subtract(
-                *star_pair)) for star_pair in itertools.combinations(pattern_star_vectors, 2)])
-            # extract the largest edge
-            pattern_largest_edge = pattern_edges[-1]
-            # divide the pattern's edges by the largest edge to create dimensionless ratios
-            pattern_edge_ratios = pattern_edges[:-1] / pattern_largest_edge
+            pattern_vectors = compute_vectors(image_centroids, fov_estimate)
+            
+            if use_angles: # Use new method based on angles
+                pattern_dot_products = np.dot(pattern_vectors, pattern_vectors.T)[upper_tri_index]
+                edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
+                pattern_edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
+            
+            else: # Use old method
+                # calculate and sort the edges of the star pattern
+                pattern_edges = np.sort([norm(np.subtract(
+                    *star_pair)) for star_pair in itertools.combinations(pattern_vectors, 2)])
+                # extract the largest edge
+                pattern_largest_edge = pattern_edges[-1]
+                # divide the pattern's edges by the largest edge to create dimensionless ratios
+                pattern_edge_ratios = pattern_edges[:-1] / pattern_largest_edge
+                
             # Pssible hash codes to look up
             hash_code_space = [range(max(low, 0), min(high+1, p_bins)) for (low, high)
                                in zip(((pattern_edge_ratios - p_max_err) * p_bins).astype(np.int),
@@ -789,11 +824,10 @@ class Tetra3():
 
                     def fov_to_error(fov):
                         # recalculate the pattern's star vectors given the new fov
-                        pattern_star_vectors = compute_vectors(
-                            image_centroids, fov)
+                        pattern_vectors = compute_vectors(image_centroids, fov)
                         # recalculate the pattern's edge lengths
                         pattern_edges = np.sort([norm(np.subtract(*star_pair)) for star_pair
-                                                in itertools.combinations(pattern_star_vectors,
+                                                in itertools.combinations(pattern_vectors,
                                                                           2)])
                         # return a list of errors, one for each edge
                         return catalog_edges - pattern_edges
@@ -805,15 +839,15 @@ class Tetra3():
                         continue
 
                     # Recalculate vectors and uniquely sort them by distance from centroid
-                    pattern_star_vectors = compute_vectors(image_centroids, fov)
+                    pattern_vectors = compute_vectors(image_centroids, fov)
                     # find the centroid, or average position, of the star pattern
-                    pattern_centroid = np.mean(pattern_star_vectors, axis=0)
+                    pattern_centroid = np.mean(pattern_vectors, axis=0)
                     # calculate each star's radius, or Euclidean distance from the centroid
                     pattern_radii = [norm(star_vector - pattern_centroid)
-                                     for star_vector in pattern_star_vectors]
+                                     for star_vector in pattern_vectors]
                     # use the radii to uniquely order the pattern's star vectors so they can be
                     # matched with the catalog vectors
-                    pattern_sorted_vectors = np.array(pattern_star_vectors)[
+                    pattern_sorted_vectors = np.array(pattern_vectors)[
                                                                        np.argsort(pattern_radii)]
                     # find the centroid, or average position, of the star pattern
                     catalog_centroid = np.mean(catalog_vectors, axis=0)
