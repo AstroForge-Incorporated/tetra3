@@ -94,6 +94,7 @@ from numpy.linalg import norm
 import scipy.ndimage
 import scipy.optimize
 import scipy.stats
+import scipy
 from scipy.spatial import KDTree
 
 _MAGIC_RAND = 2654435761
@@ -117,7 +118,7 @@ def _get_at_index(index, table):
     for c in itertools.count():
         i = (index + c**2) % max_ind
         if all(table[i, :] == 0):
-            return found
+            return np.array(found)
         else:
             found.append(table[i, :].squeeze())
 
@@ -389,7 +390,7 @@ class Tetra3():
 
     def generate_database(self, max_fov, save_as=None, star_catalog='bsc5', pattern_stars_per_fov=10,
                           verification_stars_per_fov=20, star_max_magnitude=7,
-                          star_min_separation=.05, pattern_max_error=.005, use_angles=True):
+                          star_min_separation=.05, pattern_max_error=.005):
         """Create a database and optionally save to file. Typically takes 5 to 30 minutes.
 
         Note:
@@ -423,8 +424,6 @@ class Tetra3():
                 stars (to remove doubles). Default .05.
             pattern_max_error (float, optional): Maximum difference allowed in pattern for a match.
                 Default .005.
-            use_angles (bool, optional): Use faster angle-based edge calculator instead of heritage
-                vector-difference edge calculator. Default True.
 
         Example:
             ::
@@ -615,6 +614,9 @@ class Tetra3():
         # Indices to extract from dot product matrix (above diagonal)
         upper_tri_index = np.triu_indices(pattern_size, 1)
         
+        # Create array of all patterns
+        pattern_array = np.zeros((len(pattern_list), scipy.special.comb(4, 2, exact=True) - 1))
+        
         for (index, pattern) in enumerate(pattern_list):
             if index % 1000000 == 0 and index > 0:
                 self._logger.info('Inserting pattern number: ' + str(index))
@@ -622,40 +624,20 @@ class Tetra3():
             # retrieve the vectors of the stars in the pattern
             vectors = star_table[pattern, 2:5]
             
-            if use_angles: # New faster algorithm
-                pattern_dot_products = np.dot(vectors, vectors.T)[upper_tri_index]
-                edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
-                edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
-            else: # Use old difference algorithm
-                # calculate and sort the edges of the star pattern
-                edges = np.sort([np.sqrt((np.subtract(*star_pair)**2).sum())
-                                 for star_pair in itertools.combinations(vectors, 2)])         
-                # extract the largest edge
-                largest_edge = edges[-1]
-                # divide the edges by the largest edge to create dimensionless ratios
-                edge_ratios = edges[:-1] / largest_edge
-            
-            # convert edge ratio float to hash code by binning
-            hash_code = tuple((edge_ratios * pattern_bins).astype(np.int))
-            hash_index = _key_to_index(hash_code, pattern_bins, pattern_catalog.shape[0])
-            # use quadratic probing to find an open space in the pattern catalog to insert
-            for index in ((hash_index + offset ** 2) % pattern_catalog.shape[0]
-                          for offset in itertools.count()):
-                # if the current slot is empty, add the pattern
-                if not pattern_catalog[index][0]:
-                    pattern_catalog[index] = pattern
-                    break
-                
+            pattern_dot_products = np.dot(vectors, vectors.T)[upper_tri_index]
+            edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
+            edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
+
+            # Insert into array
+            pattern_array[index, :] = edge_ratios
+        
         self._logger.info('Finished generating database.')
         self._logger.info('Size of uncompressed star table: %i Bytes.' %star_table.nbytes)
         self._logger.info('Size of uncompressed pattern catalog: %i Bytes.' %pattern_catalog.nbytes)
 
         self._star_table = star_table
         self._pattern_catalog = pattern_catalog
-        if use_angles:
-            self._db_props['pattern_mode'] = 'edge_ratio_angles'
-        else:
-            self._db_props['pattern_mode'] = 'edge_ratio'
+        self._db_props['pattern_mode'] = 'edge_ratio'
         self._db_props['pattern_size'] = pattern_size
         self._db_props['pattern_bins'] = pattern_bins
         self._db_props['pattern_max_error'] = pattern_max_error
@@ -738,9 +720,6 @@ class Tetra3():
         p_size = self._db_props['pattern_size']
         p_bins = self._db_props['pattern_bins']
         p_max_err = self._db_props['pattern_max_error']
-        # Improved extraction speed with angle instead of difference parametrisation
-        use_angles = True if self._db_props['pattern_mode'] == 'edge_ratio_angles' else False
-        self._logger.debug('Using angles for edge ratio pattern: ' + str(use_angles))
         upper_tri_index = np.triu_indices(p_size, 1)
         # Run star extraction, passing kwargs along
         t0_extract = precision_timestamp()
@@ -773,25 +752,16 @@ class Tetra3():
             # compute star vectors using an estimate for the field-of-view in the x dimension
             pattern_vectors = compute_vectors(image_centroids, fov_estimate)
             
-            if use_angles: # Use new method based on angles
-                pattern_dot_products = np.dot(pattern_vectors, pattern_vectors.T)[upper_tri_index]
-                edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
-                pattern_edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
-            
-            else: # Use old method
-                # calculate and sort the edges of the star pattern
-                pattern_edges = np.sort([norm(np.subtract(
-                    *star_pair)) for star_pair in itertools.combinations(pattern_vectors, 2)])
-                # extract the largest edge
-                pattern_largest_edge = pattern_edges[-1]
-                # divide the pattern's edges by the largest edge to create dimensionless ratios
-                pattern_edge_ratios = pattern_edges[:-1] / pattern_largest_edge
+            pattern_dot_products = np.dot(pattern_vectors, pattern_vectors.T)[upper_tri_index]
+            edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
+            pattern_edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
                 
-            # Pssible hash codes to look up
+            # Possible hash codes to look up
             hash_code_space = [range(max(low, 0), min(high+1, p_bins)) for (low, high)
                                in zip(((pattern_edge_ratios - p_max_err) * p_bins).astype(np.int),
                                       ((pattern_edge_ratios + p_max_err) * p_bins).astype(np.int))]
             # iterate over hash code space, only looking up non-duplicate codes
+            i = 1
             for hash_code in set(tuple(sorted(code))
                                  for code in itertools.product(*hash_code_space)):
                 hash_code = tuple(hash_code)
@@ -800,24 +770,27 @@ class Tetra3():
                 if len(matches) == 0:
                     continue
 
-                for match_row in matches:
-                    # retrieve the vectors of the stars in the catalog pattern
-                    catalog_vectors = self.star_table[match_row, 2:5]
-                    # calculate and sort the edges of the star pattern
-                    catalog_edges = np.sort([norm(np.subtract(*star_pair)) for star_pair
-                                            in itertools.combinations(catalog_vectors, 2)])
-                    # extract the largest edge
-                    catalog_largest_edge = catalog_edges[-1]
-                    # divide the edges by the largest edge to create dimensionless ratios
-                    catalog_edge_ratios = catalog_edges[:-1] / catalog_largest_edge
-                    # check if match is within the given maximum allowable error
-                    # note that this also filters out star patterns from colliding bins
-                    if any([abs(val) > p_max_err for val in (catalog_edge_ratios
-                                                             - pattern_edge_ratios)]):
-                        continue
+                # Get star vectors for all matching hashes
+                catalog_star_vectors = self.star_table[matches, 2:5]
+                # Calculate pattern by angles between vectors
+                catalog_dot_products = catalog_star_vectors @ catalog_star_vectors.swapaxes(1,2)
+                catalog_pattern_edges = np.sort(np.arccos(
+                    catalog_dot_products[:, upper_tri_index[0], upper_tri_index[1]]))
+                catalog_largest_edges = catalog_pattern_edges[:, -1]
+                catalog_edge_ratios = catalog_pattern_edges[:, :-1] / catalog_largest_edges[:, None]
+                # Calculate difference to observed pattern and find sufficiencly close ones
+                max_edge_error = np.amax(np.abs(catalog_edge_ratios - pattern_edge_ratios), axis=1)
+                valid_patterns = np.argwhere(max_edge_error < p_max_err)[:,0]
+                
+                # Go through each matching pattern and calculate further
+                for index in valid_patterns:
+                    catalog_vectors = catalog_star_vectors[index, :]
+                    catalog_edge_ratio = catalog_edge_ratios[index, :]
+                    catalog_largest_edge = catalog_largest_edges[index]
+
                     # compute the actual field-of-view using least squares optimization
                     # compute the catalog pattern's edges for error estimation
-                    catalog_edges = np.append(catalog_edge_ratios * catalog_largest_edge,
+                    catalog_edges = np.append(catalog_edge_ratio * catalog_largest_edge,
                                               catalog_largest_edge)
                     # helper function that calculates a list of errors in pattern edge lengths
                     # with the catalog edge lengths for a given fov
