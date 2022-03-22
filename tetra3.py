@@ -748,7 +748,8 @@ class Tetra3():
             
             pattern_dot_products = np.dot(pattern_vectors, pattern_vectors.T)[upper_tri_index]
             edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
-            pattern_edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
+            pattern_largest_edge = edge_angles_sorted[-1]
+            pattern_edge_ratios = edge_angles_sorted[:-1] / pattern_largest_edge
                 
             # Possible hash codes to look up
             hash_code_space = [range(max(low, 0), min(high+1, p_bins)) for (low, high)
@@ -775,32 +776,19 @@ class Tetra3():
                 # Calculate difference to observed pattern and find sufficiencly close ones
                 max_edge_error = np.amax(np.abs(catalog_edge_ratios - pattern_edge_ratios), axis=1)
                 valid_patterns = np.argwhere(max_edge_error < p_max_err)[:,0]
-                
                 # Go through each matching pattern and calculate further
                 for index in valid_patterns:
                     catalog_vectors = catalog_star_vectors[index, :]
                     catalog_edge_ratio = catalog_edge_ratios[index, :]
                     catalog_largest_edge = catalog_largest_edges[index]
 
-                    # compute the actual field-of-view using least squares optimization
-                    # compute the catalog pattern's edges for error estimation
+                    # compute the catalogue pattern's aboslute edge angles for error estimation
                     catalog_edges = np.append(catalog_edge_ratio * catalog_largest_edge,
                                               catalog_largest_edge)
-                    # helper function that calculates a list of errors in pattern edge lengths
-                    # with the catalog edge lengths for a given fov
 
-                    def fov_to_error(fov):
-                        # recalculate the pattern's star vectors given the new fov
-                        pattern_vectors = compute_vectors(image_centroids, fov)
-                        # recalculate the pattern's edge lengths
-                        pattern_edges = np.sort([norm(np.subtract(*star_pair)) for star_pair
-                                                in itertools.combinations(pattern_vectors,
-                                                                          2)])
-                        # return a list of errors, one for each edge
-                        return catalog_edges - pattern_edges
-                    # find the fov that minimizes the squared error, starting with the estimate
-                    fov = scipy.optimize.leastsq(fov_to_error, fov_estimate)[0][0]
-
+                    # Calculate actual fov by scaling estimate
+                    fov = catalog_largest_edge / pattern_largest_edge * fov_estimate
+                    
                     # If the FOV is incorrect we can skip this immediately
                     if fov_max_error is not None and abs(fov - fov_estimate) > fov_max_error:
                         continue
