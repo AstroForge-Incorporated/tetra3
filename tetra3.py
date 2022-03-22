@@ -731,19 +731,13 @@ class Tetra3():
             # compute list of (i,j,k) vectors given list of (y,x) star centroids and
             # an estimate of the image's field-of-view in the x dimension
             # by applying the pinhole camera equations
-            center_x = width / 2.
-            center_y = height / 2.
-            scale_factor = np.tan(fov / 2) / center_x
-            star_vectors = np.zeros((len(star_centroids), 3))
-            for (index, (star_y, star_x)) in enumerate(star_centroids):
-                j_over_i = (center_x - star_x) * scale_factor
-                k_over_i = (center_y - star_y) * scale_factor
-                i = 1. / np.sqrt(1 + j_over_i**2 + k_over_i**2)
-                j = j_over_i * i
-                k = k_over_i * i
-                star_vectors[index, :] = [i, j, k]
-                #vec = np.array([i, j, k])
-                #star_vectors.append(vec)
+            scale_factor = np.tan(fov / 2) / width * 2
+            star_vectors = np.ones((len(star_centroids), 3))
+            # Pixel centre of image
+            img_center = [height / 2., width / 2.]
+            # Calculate normal vectors
+            star_vectors[:, 2:0:-1] = (img_center - star_centroids) * scale_factor
+            star_vectors = star_vectors / norm(star_vectors, axis=1)[:, None]
             return star_vectors
 
         t0_solve = precision_timestamp()
