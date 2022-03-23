@@ -525,58 +525,53 @@ class Tetra3():
         # Filter for maximum number of stars in FOV and doubles
         keep_for_patterns = np.full(star_table.shape[0], False)
         keep_for_verifying = np.full(star_table.shape[0], False)
-        all_star_vectors = star_table[:, 2:5]
         # Keep the first one and skip index 0 in loop
         keep_for_patterns[0] = True
         keep_for_verifying[0] = True
         
         # Insert all stars in a KD-tree for fast neighbour lookup
         self._logger.info('Trimming database to requested star density.')
+        all_star_vectors = star_table[:, 2:5]
         vector_kd_tree = KDTree(all_star_vectors)
-        # Loop over all stars
-        for star_ind in range(1, all_star_vectors.shape[0]): 
+        
+        # Separation distance (diameter) between stars for correct density
+        pattern_stars_separation = 1.1 * max_fov / np.sqrt(pattern_stars_per_fov)
+        verification_stars_separation = 1.1 * max_fov / np.sqrt(verification_stars_per_fov)
+        self._logger.info('Separating pattern stars by '
+            + str(np.rad2deg(pattern_stars_separation)) + 'deg.')
+        self._logger.info('Separating verification stars by ' 
+            + str(np.rad2deg(verification_stars_separation)) + 'deg.')
+        
+        # Loop through all stars in database
+        for star_ind in range(1, num_entries):
             vector = all_star_vectors[star_ind, :]
-            within_fov = vector_kd_tree.query_ball_point(vector, max_fov/2)
-            
-            # Check how many within FOV are already kept, if not enough check dobule star separation
-            # limit and add to the database if allowed. First for patterns then for verification.
-            pattern_in_fov = sum(keep_for_patterns[within_fov])
-            if pattern_in_fov < pattern_stars_per_fov:
-                # Check if the new star to insert will violate minimum star separation
-                in_fov = all_star_vectors[np.compress(keep_for_patterns[within_fov], within_fov), :]
-                if star_min_separation is None or in_fov.shape[0] == 0:
-                    # No minimum or no nearby stars kept yet
-                    keep_for_patterns[star_ind] = True
-                    keep_for_verifying[star_ind] = True
-                elif all(np.dot(vector.T, in_fov.T) < np.cos(np.deg2rad(star_min_separation))):
-                    # All kept stars are far enough
-                    keep_for_patterns[star_ind] = True
-                    keep_for_verifying[star_ind] = True
-
-            verifying_in_fov = sum(keep_for_verifying[within_fov])
-            if verifying_in_fov < verification_stars_per_fov:
-                # Check if the new star to insert will violate minimum star separation
-                in_fov = all_star_vectors[np.compress(keep_for_verifying[within_fov], within_fov),:]
-                if star_min_separation is None or in_fov.shape[0] == 0:
-                    # No minimum or no nearby stars kept yet
-                    keep_for_verifying[star_ind] = True
-                elif all(np.dot(vector.T, in_fov.T) < np.cos(np.deg2rad(star_min_separation))):
-                    # All kept stars are far enough
-                    keep_for_verifying[star_ind] = True
+            # Check if any kept stars are within the pattern checking separation
+            within_pattern_separation = vector_kd_tree.query_ball_point(vector,
+                pattern_stars_separation/2)
+            occupied_for_pattern = np.any(keep_for_patterns[within_pattern_separation])
+            #print(occupied_for_pattern)
+            # If there isn't a star to close, add this to the table and carry on
+            if not occupied_for_pattern:
+                keep_for_patterns[star_ind] = True
+                keep_for_verifying[star_ind] = True
+                continue
+            # If too close for patterns, check if ok for verification
+            within_verification_separation = vector_kd_tree.query_ball_point(vector,
+                verification_stars_separation/2)
+            occupied_for_verification = np.any(keep_for_verifying[within_verification_separation])
+            if not occupied_for_verification:
+                keep_for_verifying[star_ind] = True
 
         # Trim down star table and update indexing for pattern stars
         star_table = star_table[keep_for_verifying, :]
         pattern_stars = (np.cumsum(keep_for_verifying)-1)[keep_for_patterns]
-
-        self._logger.info('For pattern matching with at most ' + str(pattern_stars_per_fov)
-                          + ' stars per FOV and no doubles: ' + str(len(pattern_stars)) + '.')
-        self._logger.info('For verification with at most ' + str(verification_stars_per_fov)
-                          + ' stars per FOV and no doubles: ' + str(star_table.shape[0]) + '.')
-
+        
+        self._logger.info('Stars for pattern matching: ' + str(np.sum(keep_for_patterns)) + '.')
+        self._logger.info('Stars for verification: ' + str(np.sum(keep_for_verifying)) + '.')
 
         # Create patterns by finding sequences of stars within the FOV limit and calculating their
         # edge ratios. First insert everything into a KD-tree then take out one-by-one and find all
-        # remaining patterns.        
+        # remaining patterns.
         self._logger.info('Generating all possible patterns.')
         # Tree of all stars for nearest neighbour lookup
         pattern_kd_tree = KDTree(star_table[:, 2:5])
@@ -612,7 +607,9 @@ class Tetra3():
         pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint16)
         
         # Indices to extract from dot product matrix (above diagonal)
-        upper_tri_index = np.triu_indices(pattern_size, 1)      
+        upper_tri_index = np.triu_indices(pattern_size, 1)
+        
+        # Go through each pattern and insert to the catalogue
         for (index, pattern) in enumerate(pattern_list):
             if index % 1000000 == 0 and index > 0:
                 self._logger.info('Inserting pattern number: ' + str(index))
@@ -626,9 +623,10 @@ class Tetra3():
 
             # convert edge ratio float to hash code by binning
             hash_code = tuple((edge_ratios * pattern_bins).astype(np.int))
-            hash_index = _key_to_index(hash_code, pattern_bins, pattern_catalog.shape[0])
+            hash_index = _key_to_index(hash_code, pattern_bins, catalog_length)
+            
             # use quadratic probing to find an open space in the pattern catalog to insert
-            for index in ((hash_index + offset ** 2) % pattern_catalog.shape[0]
+            for index in ((hash_index + offset ** 2) % catalog_length
                           for offset in itertools.count()):
                 # if the current slot is empty, add the pattern
                 if not pattern_catalog[index][0]:
