@@ -612,11 +612,7 @@ class Tetra3():
         pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint16)
         
         # Indices to extract from dot product matrix (above diagonal)
-        upper_tri_index = np.triu_indices(pattern_size, 1)
-        
-        # Create array of all patterns
-        pattern_array = np.zeros((len(pattern_list), scipy.special.comb(4, 2, exact=True) - 1))
-        
+        upper_tri_index = np.triu_indices(pattern_size, 1)      
         for (index, pattern) in enumerate(pattern_list):
             if index % 1000000 == 0 and index > 0:
                 self._logger.info('Inserting pattern number: ' + str(index))
@@ -628,8 +624,16 @@ class Tetra3():
             edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
             edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
 
-            # Insert into array
-            pattern_array[index, :] = edge_ratios
+            # convert edge ratio float to hash code by binning
+            hash_code = tuple((edge_ratios * pattern_bins).astype(np.int))
+            hash_index = _key_to_index(hash_code, pattern_bins, pattern_catalog.shape[0])
+            # use quadratic probing to find an open space in the pattern catalog to insert
+            for index in ((hash_index + offset ** 2) % pattern_catalog.shape[0]
+                          for offset in itertools.count()):
+                # if the current slot is empty, add the pattern
+                if not pattern_catalog[index][0]:
+                    pattern_catalog[index] = pattern
+                    break
         
         self._logger.info('Finished generating database.')
         self._logger.info('Size of uncompressed star table: %i Bytes.' %star_table.nbytes)
