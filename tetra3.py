@@ -390,7 +390,8 @@ class Tetra3():
 
     def generate_database(self, max_fov, save_as=None, star_catalog='bsc5', pattern_stars_per_fov=10,
                           verification_stars_per_fov=20, star_max_magnitude=7,
-                          star_min_separation=.05, pattern_max_error=.005):
+                          star_min_separation=.05, pattern_max_error=.005,
+                          range_ra = None, range_dec = None):
         """Create a database and optionally save to file. Typically takes 5 to 30 minutes.
 
         Note:
@@ -424,6 +425,10 @@ class Tetra3():
                 stars (to remove doubles). Default .05.
             pattern_max_error (float, optional): Maximum difference allowed in pattern for a match.
                 Default .005.
+            range_ra (tuple, optional): Tuple with the range (min_ra, max_ra) in degrees (0 to 360).
+                If set, only stars within the given right ascension will be kept in the database.
+            range_dec (tuple, optional): Tuple with the range (min_dec, max_dec) in degrees (-90 to 90).
+                If set, only stars within the give declination will be kept in the database.
 
         Example:
             ::
@@ -498,10 +503,10 @@ class Tetra3():
                         continue
                     mag = float(entry[5])
                     if mag is not None and mag <= star_max_magnitude:
-                        pmRA = np.float(entry[12])/1000/60/60  # convert milliarcseconds per year to degrees per year
-                        ra  = np.deg2rad(np.float(entry[8]) + pmRA * (current_year - 1991.25))
-                        pmDec = np.float(entry[13])/1000/60/60  # convert milliarcseconds per year to degrees per year
-                        dec = np.deg2rad(np.float(entry[9]) + pmDec * (current_year - 1991.25))
+                        pmRA = float(entry[12])/1000/60/60  # convert milliarcseconds per year to degrees per year
+                        ra  = np.deg2rad(float(entry[8]) + pmRA * (current_year - 1991.25))
+                        pmDec = float(entry[13])/1000/60/60  # convert milliarcseconds per year to degrees per year
+                        dec = np.deg2rad(float(entry[9]) + pmDec * (current_year - 1991.25))
                         star_table[i,:] = ([ra, dec, 0, 0, 0, mag])
                 if incomplete_entries:
                     self._logger.info('Skipped %i incomplete entries.' % incomplete_entries)
@@ -514,6 +519,29 @@ class Tetra3():
         num_entries = star_table.shape[0]
         self._logger.info('Loaded ' + str(num_entries) + ' stars with magnitude below ' \
             + str(star_max_magnitude) + '.')
+
+        # If desired, clip out only a specific range of ra and/or dec for a partial coverage database
+        if range_ra is not None:
+            range_ra = np.deg2rad(range_ra)
+            if range_ra[0] < range_ra[1]: # Range does not cross 360deg discontinuity
+                kept = np.logical_and(star_table[:, 0] > range_ra[0], star_table[:, 0] < range_ra[1])
+            else:
+                kept = np.logical_or(star_table[:, 0] > range_ra[0], star_table[:, 0] < range_ra[1])
+            star_table = star_table[kept, :]
+            num_entries = star_table.shape[0]
+            self._logger.info('Limited to RA range ' + str(np.rad2deg(range_ra)) + ', keeping ' \
+                + str(num_entries) + ' stars.')
+        if range_dec is not None:
+            range_dec = np.deg2rad(range_dec)
+            if range_dec[0] < range_dec[1]: # Range does not cross +/-90deg discontinuity
+                kept = np.logical_and(star_table[:, 1] > range_dec[0], star_table[:, 1] < range_dec[1])
+            else:
+                kept = np.logical_or(star_table[:, 1] > range_dec[0], star_table[:, 1] < range_dec[1])
+            star_table = star_table[kept, :]
+            num_entries = star_table.shape[0]
+            self._logger.info('Limited to DEC range ' + str(np.rad2deg(range_dec)) + ', keeping ' \
+                + str(num_entries) + ' stars.')
+
 
         # Calculate star direction vectors:
         for i in range(0, num_entries):
