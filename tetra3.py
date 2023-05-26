@@ -622,7 +622,7 @@ class Tetra3():
             edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
 
             # convert edge ratio float to hash code by binning
-            hash_code = tuple((edge_ratios * pattern_bins).astype(np.int))
+            hash_code = tuple((edge_ratios * pattern_bins).astype(int))
             hash_index = _key_to_index(hash_code, pattern_bins, catalog_length)
             
             # use quadratic probing to find an open space in the pattern catalog to insert
@@ -755,8 +755,8 @@ class Tetra3():
                 
             # Possible hash codes to look up
             hash_code_space = [range(max(low, 0), min(high+1, p_bins)) for (low, high)
-                               in zip(((pattern_edge_ratios - p_max_err) * p_bins).astype(np.int),
-                                      ((pattern_edge_ratios + p_max_err) * p_bins).astype(np.int))]
+                               in zip(((pattern_edge_ratios - p_max_err) * p_bins).astype(int),
+                                      ((pattern_edge_ratios + p_max_err) * p_bins).astype(int))]
             # iterate over hash code space, only looking up non-duplicate codes
             i = 1
             for hash_code in set(tuple(sorted(code))
@@ -861,11 +861,14 @@ class Tetra3():
                                                           - (num_star_matches - 2),
                                                           num_extracted_stars,
                                                           1 - prob_single_star_mismatch)
+                    self._logger.debug("Possible match: Stars = %d, P_mismatch = %.2e, FOV = %.5fdeg" \
+                        % (len(match_tuples), prob_mismatch, np.rad2deg(fov)))
                     if prob_mismatch < match_threshold:
                         # Solved in this time
                         t_solve = (precision_timestamp() - t0_solve)*1000
                         # diplay mismatch probability in scientific notation
-                        self._logger.debug("NEW P: %.4g" % prob_mismatch)
+                        self._logger.debug("MATCH ACCEPTED")
+                        self._logger.debug("Prob: %.4g" % prob_mismatch)
                         # if a match has been found, recompute rotation with all matched vectors
                         rotation_matrix = find_rotation_matrix(*zip(*match_tuples))
                         # Residuals calculation
