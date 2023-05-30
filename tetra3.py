@@ -241,9 +241,11 @@ class Tetra3():
         self._pattern_catalog = None
         self._verification_catalog = None
         self._db_props = {'pattern_mode': None, 'pattern_size': None, 'pattern_bins': None,
-                          'pattern_max_error': None, 'max_fov': None,
-                          'pattern_stars_per_fov': None, 'verification_stars_per_fov': None,
-                          'star_max_magnitude': None, 'star_min_separation': None}
+                          'pattern_max_error': None, 'max_fov': None, 'min_fov': None,
+                          'star_catalog': None, 'pattern_stars_per_fov': None,
+                          'verification_stars_per_fov': None, 'star_max_magnitude': None,
+                          'simplify_pattern': None, 'range_ra': None, 'range_dec': None}
+
         if load_database is not None:
             self._logger.debug('Trying to load database')
             self.load_database(load_database)
@@ -302,8 +304,6 @@ class Tetra3():
               'max_fov'.
             - 'verification_stars_per_fov': Number of stars in catalog in each region of size 'max_fov'.
             - 'star_max_magnitude': Dimmest apparent magnitude of stars in database.
-            - 'star_min_separation': Smallest separation allowed between stars (to remove doubles;
-              degrees).
         """
         return self._db_props
 
@@ -344,7 +344,8 @@ class Tetra3():
                     self._logger.debug('Unpacked star_min_magnitude to: ' \
                         + str(self._db_props[key]))
                 else:
-                    raise
+                    self._logger.warning('Missing key in database (likely version difference): ' + str(key))
+                    #raise
 
     def save_database(self, path):
         """Save database to file.
@@ -364,39 +365,54 @@ class Tetra3():
             path = Path(path).with_suffix('.npz')
             
         self._logger.info('Saving database to: ' + str(path))
+
         # Pack properties as numpy structured array
         props_packed = np.array((self._db_props['pattern_mode'],
                                  self._db_props['pattern_size'],
                                  self._db_props['pattern_bins'],
                                  self._db_props['pattern_max_error'],
                                  self._db_props['max_fov'],
+                                 self._db_props['min_fov'],
+                                 self._db_props['star_catalog'],
                                  self._db_props['pattern_stars_per_fov'],
                                  self._db_props['verification_stars_per_fov'],
                                  self._db_props['star_max_magnitude'],
-                                 self._db_props['star_min_separation']),
+                                 self._db_props['simplify_pattern'],
+                                 self._db_props['range_ra'],
+                                 self._db_props['range_dec']),
                                 dtype=[('pattern_mode', 'U64'),
                                        ('pattern_size', np.uint16),
                                        ('pattern_bins', np.uint16),
                                        ('pattern_max_error', np.float32),
                                        ('max_fov', np.float32),
+                                       ('min_fov', np.float32),
+                                       ('star_catalog', 'U64'),
                                        ('pattern_stars_per_fov', np.uint16),
                                        ('verification_stars_per_fov', np.uint16),
                                        ('star_max_magnitude', np.float32),
-                                       ('star_min_separation', np.float32)])
+                                       ('simplify_pattern', bool),
+                                       ('range_ra', np.float32, (2,)),
+                                       ('range_dec', np.float32, (2,))])
+
         self._logger.debug('Packed properties into: ' + str(props_packed))
         self._logger.debug('Saving as compressed numpy archive')
         np.savez_compressed(path, star_table=self.star_table,
                             pattern_catalog=self.pattern_catalog, props_packed=props_packed)
 
-    def generate_database(self, max_fov, save_as=None, star_catalog='bsc5', pattern_stars_per_fov=10,
-                          verification_stars_per_fov=20, star_max_magnitude=7,
-                          star_min_separation=.05, pattern_max_error=.005,
+    def generate_database(self, max_fov, min_fov=None, save_as=None, star_catalog='bsc5', pattern_stars_per_fov=10,
+                          verification_stars_per_fov=30, star_max_magnitude=7,
+                          pattern_max_error=.005, simplify_pattern=False,
                           range_ra = None, range_dec = None):
-        """Create a database and optionally save to file. Typically takes 5 to 30 minutes.
+        """Create a database and optionally save it to file.
+        
+        Takes a few minutes for a small (large FOV) database, can take many hours for a large (small FOV) database.
+        The primary knowledge necessary is the FOV you want the database to work for. For a single application, set
+        max_fov equal to your known FOV. Alternatively, set max_fov and min_fov to the range of FOVs you want the 
+        database to be built for. For large difference in max_fov and min_fov, a multiscale database will be built
+        where successively smaller patterns are generated to cover a wide range of applications.
 
         Note:
-            If you wish to build you own database (typically for a different field-of-view) you must
-            download a star catalogue. tetra3 supports three options:
+            If you wish to build you own database you must download a star catalogue. tetra3 supports three options:
             
             * The 285KB Yale Bright Star Catalog 'BSC5' containing 9,110 stars. This is complete to
               to about magnitude seven and is sufficient for >10 deg field-of-view setups.
@@ -409,27 +425,6 @@ class Tetra3():
             <https://cdsarc.u-strasbg.fr/ftp/cats/I/239/> (save the appropriate .dat file). The
             downloaded catalogue must be placed in the tetra3 directory.
 
-        Args:
-            max_fov (float): Maximum angle (in degrees) between stars in the same pattern.
-            save_as (str or pathlib.Path, optional): Save catalog here when finished. Calls
-                :meth:`save_database`.
-            star_catalog (string, optional): Abbreviated name of star catalog, one of 'bsc5',
-                'hip_main', or 'tyc_main'. Default 'bsc5'.
-            pattern_stars_per_fov (int, optional): Number of stars used for pattern matching in each
-                region of size 'max_fov'. Default 10.
-            verification_stars_per_fov (int, optional): Number of stars used for verification of the
-                solution in each region of size 'max_fov'. Default 20.
-            star_max_magnitude (float, optional): Dimmest apparent magnitude of stars in database.
-                Default 7.
-            star_min_separation (float, optional): Smallest separation (in degrees) allowed between
-                stars (to remove doubles). Default .05.
-            pattern_max_error (float, optional): Maximum difference allowed in pattern for a match.
-                Default .005.
-            range_ra (tuple, optional): Tuple with the range (min_ra, max_ra) in degrees (0 to 360).
-                If set, only stars within the given right ascension will be kept in the database.
-            range_dec (tuple, optional): Tuple with the range (min_dec, max_dec) in degrees (-90 to 90).
-                If set, only stars within the give declination will be kept in the database.
-
         Example:
             ::
 
@@ -438,22 +433,52 @@ class Tetra3():
                 # Generate and save database
                 t3.generate_database(max_fov=20, save_as='my_database_name')
 
+        Args:
+            max_fov (float): Maximum angle (in degrees) between stars in the same pattern.
+            min_fov (float, optional): Minimum FOV considered when the catalogue density is trimmed to size.
+                If None (the default), min_fov will be set to max_fov, i.e. a catalogue for a single
+                application is generated (this is most efficient size and speed wise).
+            save_as (str or pathlib.Path, optional): Save catalogue here when finished. Calls
+                :meth:`save_database`.
+            star_catalog (string, optional): Abbreviated name of star catalog, one of 'bsc5',
+                'hip_main', or 'tyc_main'. Default 'bsc5'.
+            pattern_stars_per_fov (int, optional): Number of stars used for pattern matching in each
+                region of size 'max_fov'. Default 10.
+            verification_stars_per_fov (int, optional): Number of stars used for verification of the
+                solution in each region of size 'max_fov'. Default 30.
+            star_max_magnitude (float, optional): Dimmest apparent magnitude of stars in database.
+                Default 7.
+            pattern_max_error (float, optional): Maximum difference allowed in pattern for a match.
+                Default .005.
+            simplify_pattern (bool, optional): If set to True, the patterns generated have maximum
+                size of FOV/2 from the centre star, and will be generated much faster. If set to 
+                False (the default) the maximum separation of all stars in the pattern is FOV.
+            range_ra (tuple, optional): Tuple with the range (min_ra, max_ra) in degrees (0 to 360).
+                If set, only stars within the given right ascension will be kept in the database.
+            range_dec (tuple, optional): Tuple with the range (min_dec, max_dec) in degrees (-90 to 90).
+                If set, only stars within the give declination will be kept in the database.
 
         """
         self._logger.debug('Got generate pattern catalogue with input: '
-                           + str((max_fov, save_as, star_catalog, pattern_stars_per_fov,
+                           + str((max_fov, min_fov, save_as, star_catalog, pattern_stars_per_fov,
                                   verification_stars_per_fov, star_max_magnitude,
-                                  star_min_separation, pattern_max_error)))
+                                  pattern_max_error, simplify_pattern,
+                                  range_ra, range_dec)))
+
+
 
         assert star_catalog in _supported_databases, 'Star catalogue name must be one of: ' \
              + str(_supported_databases)
         max_fov = np.deg2rad(float(max_fov))
+        if min_fov is None:
+            min_fov = max_fov
+        else:
+            min_fov = np.deg2rad(float(min_fov))
         pattern_stars_per_fov = int(pattern_stars_per_fov)
         verification_stars_per_fov = int(verification_stars_per_fov)
         star_max_magnitude = float(star_max_magnitude)
-        star_min_separation = float(star_min_separation)
         pattern_size = 4
-        pattern_bins = 25
+        pattern_bins = round(1/4/pattern_max_error)
         current_year = datetime.utcnow().year
         
         catalog_file_full_pathname = Path(__file__).parent / star_catalog
@@ -462,7 +487,7 @@ class Tetra3():
             catalog_file_full_pathname = catalog_file_full_pathname.with_suffix('.dat')
         
         assert catalog_file_full_pathname.exists(), 'No star catalogue found at ' +str(     catalog_file_full_pathname)   
-         
+        
         # Calculate number of star catalog entries:
         if star_catalog == 'bsc5':
             header_length = 28
@@ -542,97 +567,127 @@ class Tetra3():
             self._logger.info('Limited to DEC range ' + str(np.rad2deg(range_dec)) + ', keeping ' \
                 + str(num_entries) + ' stars.')
 
-
         # Calculate star direction vectors:
         for i in range(0, num_entries):
             vector = np.array([np.cos(star_table[i,0])*np.cos(star_table[i,1]),
                                np.sin(star_table[i,0])*np.cos(star_table[i,1]),
                                np.sin(star_table[i,1])])
             star_table[i,2:5] = vector
-                
-        # Filter for maximum number of stars in FOV and doubles
-        keep_for_patterns = np.full(star_table.shape[0], False)
-        keep_for_verifying = np.full(star_table.shape[0], False)
-        # Keep the first one and skip index 0 in loop
-        keep_for_patterns[0] = True
-        keep_for_verifying[0] = True
-        
         # Insert all stars in a KD-tree for fast neighbour lookup
         self._logger.info('Trimming database to requested star density.')
         all_star_vectors = star_table[:, 2:5]
         vector_kd_tree = KDTree(all_star_vectors)
-        
-        # Separation distance (diameter) between stars for correct density
-        pattern_stars_separation = 1.1 * max_fov / np.sqrt(pattern_stars_per_fov)
-        verification_stars_separation = 1.1 * max_fov / np.sqrt(verification_stars_per_fov)
-        self._logger.info('Separating pattern stars by '
-            + str(np.rad2deg(pattern_stars_separation)) + 'deg.')
-        self._logger.info('Separating verification stars by ' 
-            + str(np.rad2deg(verification_stars_separation)) + 'deg.')
-        
-        # Loop through all stars in database
-        for star_ind in range(1, num_entries):
-            vector = all_star_vectors[star_ind, :]
-            # Check if any kept stars are within the pattern checking separation
-            within_pattern_separation = vector_kd_tree.query_ball_point(vector,
-                pattern_stars_separation/2)
-            occupied_for_pattern = np.any(keep_for_patterns[within_pattern_separation])
-            #print(occupied_for_pattern)
-            # If there isn't a star to close, add this to the table and carry on
-            if not occupied_for_pattern:
-                keep_for_patterns[star_ind] = True
-                keep_for_verifying[star_ind] = True
-                continue
-            # If too close for patterns, check if ok for verification
-            within_verification_separation = vector_kd_tree.query_ball_point(vector,
-                verification_stars_separation/2)
-            occupied_for_verification = np.any(keep_for_verifying[within_verification_separation])
-            if not occupied_for_verification:
-                keep_for_verifying[star_ind] = True
 
-        # Trim down star table and update indexing for pattern stars
-        star_table = star_table[keep_for_verifying, :]
-        pattern_stars = (np.cumsum(keep_for_verifying)-1)[keep_for_patterns]
-        
-        self._logger.info('Stars for pattern matching: ' + str(np.sum(keep_for_patterns)) + '.')
-        self._logger.info('Stars for verification: ' + str(np.sum(keep_for_verifying)) + '.')
+        # Bool list of stars, indicating it will be used in the database
+        keep_for_patterns = np.full(num_entries, False)
+        # Keep the first one and skip index 0 in loop
+        keep_for_patterns[0] = True
 
-        # Create patterns by finding sequences of stars within the FOV limit and calculating their
-        # edge ratios. First insert everything into a KD-tree then take out one-by-one and find all
-        # remaining patterns.
-        self._logger.info('Generating all possible patterns.')
-        # Tree of all stars for nearest neighbour lookup
-        pattern_kd_tree = KDTree(star_table[:, 2:5])
-        # Stars available for patterning, to start remove those only for verification
-        available_stars = [True if k in pattern_stars else False for k in range(star_table.shape[0])]
-        
+        # Calculate set of FOV scales to create patterns at
+        fov_ratio = max_fov/min_fov
+        fov_divisions = int(np.log2(fov_ratio)) + 1
+        if fov_divisions == 1:
+            pattern_fovs = [max_fov]
+        else:
+            pattern_fovs = np.exp2(np.linspace(np.log2(min_fov), np.log2(max_fov), fov_divisions))
+        self._logger.info('Generating patterns at FOV scales: ' + str(np.rad2deg(pattern_fovs)))
+
+        # List of patterns found, to be populated in loop
         pattern_list = []
         # initialize pattern, which will contain pattern_size star ids
         pattern = [None] * pattern_size
-        
-        for (index, pattern[0]) in enumerate(pattern_stars):
-            # Remove star from consideration
-            available_stars[pattern[0]] = False
-            # Find all neighbours within FOV, keep only those not removed
-            vector = star_table[pattern[0], 2:5]
-            neighbours = pattern_kd_tree.query_ball_point(vector, max_fov)
-            available = [available_stars[i] for i in neighbours]
-            neighbours = np.compress(available, neighbours)
+        for pattern_fov in reversed(pattern_fovs):
+            if fov_divisions == 1:
+                # Single scale database, trim to min_fov, make patterns up to max_fov
+                pattern_stars_separation = .6 * min_fov / np.sqrt(pattern_stars_per_fov)
+            else:
+                # Multiscale database, trim and make patterns iteratively at smaller FOVs
+                pattern_stars_separation = .6 * pattern_fov / np.sqrt(pattern_stars_per_fov)
 
-            # Check all possible patterns
-            for pattern[1:] in itertools.combinations(neighbours, pattern_size - 1):
-                # Unpack and measure angle between all vectors
-                vectors = star_table[pattern, 2:5]
-                dots = np.dot(vectors, vectors.T)
-                
-                if dots.min() > np.cos(max_fov):
-                    # Maximum angle is within the FOV limit, append
-                    pattern_list.append(pattern.copy())
-        
+            self._logger.info('At FOV ' + str(round(np.rad2deg(pattern_fov), 5)) + ' separate stars by ' \
+                + str(np.rad2deg(pattern_stars_separation)) + 'deg.')
+            # Loop through all stars in database, create set of of pattern stars
+            # Note that each loop just adds stars to the previous version (between old ones)
+            # so we can skip all indices already kept
+            for star_ind in np.compress(np.logical_not(keep_for_patterns), range(num_entries)):
+                vector = all_star_vectors[star_ind, :]
+                # Check if any kept stars are within the pattern checking separation
+                within_pattern_separation = vector_kd_tree.query_ball_point(vector,
+                    pattern_stars_separation)
+                occupied_for_pattern = np.any(keep_for_patterns[within_pattern_separation])
+                # If there isn't a star to close, add this to the table and carry on
+                if not occupied_for_pattern:
+                    keep_for_patterns[star_ind] = True
+            
+            self._logger.info('Stars for creating patterns: ' + str(np.sum(keep_for_patterns)) + '.')
+            # Clip out table of the kept stars
+            pattern_star_table = star_table[keep_for_patterns, :]
+            # Insert into KD tree for neighbour lookup
+            pattern_kd_tree = KDTree(pattern_star_table[:, 2:5])
+            # List of stars available (not yet used to create patterns)
+            available_stars = [True] * pattern_star_table.shape[0]
+            # Index conversion from pattern_star_table to main star_table
+            pattern_index = np.nonzero(keep_for_patterns)[0].tolist()
+
+            # Loop throgh all pattern stars
+            for pattern[0] in range(pattern_star_table.shape[0]):
+                # Remove star from future consideration
+                available_stars[pattern[0]] = False
+                # Find all neighbours within FOV, keep only those not removed
+                vector = pattern_star_table[pattern[0], 2:5]
+                if simplify_pattern:
+                    neighbours = pattern_kd_tree.query_ball_point(vector, pattern_fov/2)
+                else:
+                    neighbours = pattern_kd_tree.query_ball_point(vector, pattern_fov)
+                available = [available_stars[i] for i in neighbours]
+                neighbours = np.compress(available, neighbours)
+                # Check all possible patterns
+                for pattern[1:] in itertools.combinations(neighbours, pattern_size - 1):
+                    if simplify_pattern:
+                        # Add to database
+                        pattern_list.append([pattern_index[i] for i in pattern])
+                    else:
+                        # Unpack and measure angle between all vectors
+                        vectors = pattern_star_table[pattern, 2:5]
+                        dots = np.dot(vectors, vectors.T)
+                        if dots.min() > np.cos(pattern_fov):
+                            # Maximum angle is within the FOV limit, append with original index
+                            pattern_list.append([pattern_index[i] for i in pattern])
+                    if len(pattern_list) % 1000000 == 0:
+                        self._logger.info('Generated ' + str(len(pattern_list)) + ' patterns so far.')
+        self._logger.info('Found ' + str(len(pattern_list)) + ' patterns in total.')
+
+        # Repeat process, add in missing stars for verification task
+        verification_stars_separation = .6 * min_fov / np.sqrt(verification_stars_per_fov)
+        keep_for_verifying = keep_for_patterns.copy()
+        for star_ind in range(1, num_entries):
+            vector = all_star_vectors[star_ind, :]
+            # Check if any kept stars are within the pattern checking separation
+            within_verification_separation = vector_kd_tree.query_ball_point(vector,
+                verification_stars_separation)
+            occupied_for_verification = np.any(keep_for_verifying[within_verification_separation])
+            if not occupied_for_verification:
+                keep_for_verifying[star_ind] = True
+        self._logger.info('Total stars for verification: ' + str(np.sum(keep_for_verifying)) + '.')
+
+        # Trim down star table and update indexing for pattern stars
+        star_table = star_table[keep_for_verifying, :]
+        pattern_index = (np.cumsum(keep_for_verifying)-1)
+        pattern_list = pattern_index[np.array(pattern_list)].tolist()
+
         # Create all pattens by calculating and sorting edge ratios and inserting into hash table
-        self._logger.info('Found ' + str(len(pattern_list)) + ' patterns. Building catalogue.')
+        self._logger.info('Start building catalogue.')
         catalog_length = 2 * len(pattern_list)
-        pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint16)
+        # Determine type to make sure the biggest index will fit
+        max_index = np.max(np.array(pattern_list))
+        if max_index <= np.iinfo('uint8').max:
+            pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint8)
+        elif max_index <= np.iinfo('uint16').max:
+            pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint16)
+        else:
+            pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint32)
+
+        self._logger.info('Catalog size ' + str(pattern_catalog.shape) + ' and type ' + str(pattern_catalog.dtype) + '.')
         
         # Indices to extract from dot product matrix (above diagonal)
         upper_tri_index = np.triu_indices(pattern_size, 1)
@@ -672,10 +727,14 @@ class Tetra3():
         self._db_props['pattern_bins'] = pattern_bins
         self._db_props['pattern_max_error'] = pattern_max_error
         self._db_props['max_fov'] = np.rad2deg(max_fov)
+        self._db_props['min_fov'] = np.rad2deg(min_fov)
+        self._db_props['star_catalog'] = star_catalog
         self._db_props['pattern_stars_per_fov'] = pattern_stars_per_fov
         self._db_props['verification_stars_per_fov'] = verification_stars_per_fov
         self._db_props['star_max_magnitude'] = star_max_magnitude
-        self._db_props['star_min_separation'] = star_min_separation
+        self._db_props['simplify_pattern'] = simplify_pattern
+        self._db_props['range_ra'] = range_ra
+        self._db_props['range_dec'] = range_dec
         self._logger.debug(self._db_props)
 
         if save_as is not None:
@@ -685,7 +744,7 @@ class Tetra3():
             self._logger.info('Skipping database file generation.')
 
     def solve_from_image(self, image, fov_estimate=None, fov_max_error=None,
-                         pattern_checking_stars=6, match_radius=.01, match_threshold=1e-9,
+                         pattern_checking_stars=8, match_radius=.01, match_threshold=1e-9,
                          **kwargs):
         """Solve for the sky location of an image.
 
@@ -732,6 +791,11 @@ class Tetra3():
                 dictionary except 'T_solve' and 'T_exctract'.
         """
         assert self.has_database, 'No database loaded'
+        self._logger.debug('Got solve from image with input: '
+                           + str((image, fov_estimate, fov_max_error,
+                                  pattern_checking_stars, match_radius, match_threshold,
+                                  kwargs)))
+
         image = np.asarray(image)
         if fov_estimate is None:
             fov_estimate = np.deg2rad(self._db_props['max_fov'])
@@ -755,6 +819,7 @@ class Tetra3():
         t0_extract = precision_timestamp()
         star_centroids = get_centroids_from_image(image, max_returned=num_stars, **kwargs)
         t_extract = (precision_timestamp() - t0_extract)*1000
+        self._logger.debug('Extracted centroids:\n' + str(star_centroids))
 
         def compute_vectors(star_centroids, fov):
             """Get unit vectors from star centroids (pinhole camera)."""
@@ -850,9 +915,11 @@ class Tetra3():
                         # use singular value decomposition to find the rotation matrix
                         (U, S, V) = np.linalg.svd(H)
                         rotation_matrix = np.dot(U, V)
+                        # DON'T DO THIS TO SUPPORT MIRRORED IMAGES! Could make some other matches fail
+                        # if the order of vectors is not correct?
                         # correct reflection matrix if determinant is -1 instead of 1
                         # by flipping the sign of the third column of the rotation matrix
-                        rotation_matrix[:, 2] *= np.linalg.det(rotation_matrix)
+                        #rotation_matrix[:, 2] *= np.linalg.det(rotation_matrix)
                         return rotation_matrix
 
                     # Use the pattern match to find an estimate for the image's rotation matrix
@@ -865,8 +932,9 @@ class Tetra3():
                     # Find all star vectors inside the (diagonal) field of view for matching
                     image_center_vector = rotation_matrix[0, :]
                     fov_diagonal_rad = fov * np.sqrt(width**2 + height**2) / width
-                    nearby_star_vectors = self.star_table[
-                            self._get_nearby_stars(image_center_vector, fov_diagonal_rad/2), 2:5]
+                    # Get (at most) the number of verification stars expected
+                    nearby_star_inds = self._get_nearby_stars(image_center_vector, fov_diagonal_rad/2)[:num_stars]
+                    nearby_star_vectors = self.star_table[nearby_star_inds, 2:5]
                     # Match the nearby star vectors to the proposed measured star vectors
                     match_tuples = []
                     for ind, measured_vec in enumerate(rotated_star_vectors):
