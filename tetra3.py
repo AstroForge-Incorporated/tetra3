@@ -646,6 +646,8 @@ class Tetra3():
                     if simplify_pattern:
                         # Add to database
                         pattern_list.add(tuple(pattern_index[i] for i in pattern))
+                        if len(pattern_list) % 1000000 == 0:
+                            self._logger.info('Generated ' + str(len(pattern_list)) + ' patterns so far.')
                     else:
                         # Unpack and measure angle between all vectors
                         vectors = pattern_star_table[pattern, 2:5]
@@ -653,8 +655,8 @@ class Tetra3():
                         if dots.min() > np.cos(pattern_fov):
                             # Maximum angle is within the FOV limit, append with original index
                             pattern_list.add(tuple(pattern_index[i] for i in pattern))
-                    if len(pattern_list) % 1000000 == 0:
-                        self._logger.info('Generated ' + str(len(pattern_list)) + ' patterns so far.')
+                            if len(pattern_list) % 1000000 == 0:
+                                self._logger.info('Generated ' + str(len(pattern_list)) + ' patterns so far.')
         self._logger.info('Found ' + str(len(pattern_list)) + ' patterns in total.')
 
         # Repeat process, add in missing stars for verification task
