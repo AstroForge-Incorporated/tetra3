@@ -593,7 +593,7 @@ class Tetra3():
         self._logger.info('Generating patterns at FOV scales: ' + str(np.rad2deg(pattern_fovs)))
 
         # List of patterns found, to be populated in loop
-        pattern_list = []
+        pattern_list = set([])
         # initialize pattern, which will contain pattern_size star ids
         pattern = [None] * pattern_size
         for pattern_fov in reversed(pattern_fovs):
@@ -645,14 +645,14 @@ class Tetra3():
                 for pattern[1:] in itertools.combinations(neighbours, pattern_size - 1):
                     if simplify_pattern:
                         # Add to database
-                        pattern_list.append([pattern_index[i] for i in pattern])
+                        pattern_list.add(tuple(pattern_index[i] for i in pattern))
                     else:
                         # Unpack and measure angle between all vectors
                         vectors = pattern_star_table[pattern, 2:5]
                         dots = np.dot(vectors, vectors.T)
                         if dots.min() > np.cos(pattern_fov):
                             # Maximum angle is within the FOV limit, append with original index
-                            pattern_list.append([pattern_index[i] for i in pattern])
+                            pattern_list.add(tuple(pattern_index[i] for i in pattern))
                     if len(pattern_list) % 1000000 == 0:
                         self._logger.info('Generated ' + str(len(pattern_list)) + ' patterns so far.')
         self._logger.info('Found ' + str(len(pattern_list)) + ' patterns in total.')
@@ -673,7 +673,7 @@ class Tetra3():
         # Trim down star table and update indexing for pattern stars
         star_table = star_table[keep_for_verifying, :]
         pattern_index = (np.cumsum(keep_for_verifying)-1)
-        pattern_list = pattern_index[np.array(pattern_list)].tolist()
+        pattern_list = pattern_index[np.array(list(pattern_list))].tolist()
 
         # Create all pattens by calculating and sorting edge ratios and inserting into hash table
         self._logger.info('Start building catalogue.')
