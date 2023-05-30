@@ -585,7 +585,7 @@ class Tetra3():
 
         # Calculate set of FOV scales to create patterns at
         fov_ratio = max_fov/min_fov
-        fov_divisions = int(np.log2(fov_ratio)) + 1
+        fov_divisions = round(np.log2(fov_ratio)) + 1
         if fov_divisions == 1:
             pattern_fovs = [max_fov]
         else:
