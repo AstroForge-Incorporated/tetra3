@@ -800,9 +800,10 @@ class Tetra3():
 
         image = np.asarray(image)
         if fov_estimate is None:
-            fov_estimate = np.deg2rad(self._db_props['max_fov'])
+            # If no FOV given at all, guess middle of the range for a start
+            fov_initial = np.deg2rad((self._db_props['max_fov'] + self._db_props['min_fov'])/2)
         else:
-            fov_estimate = np.deg2rad(float(fov_estimate))
+            fov_initial = np.deg2rad(float(fov_estimate))
         if fov_max_error is not None:
             fov_max_error = np.deg2rad(float(fov_max_error))
         match_radius = float(match_radius)
@@ -840,13 +841,18 @@ class Tetra3():
         t0_solve = precision_timestamp()
         for image_centroids in _generate_patterns_from_centroids(
                                             star_centroids[:pattern_checking_stars], p_size):
-            # compute star vectors using an estimate for the field-of-view in the x dimension
-            pattern_vectors = compute_vectors(image_centroids, fov_estimate)
-            
+            if fov_estimate is None:
+                # Calculate the largest distance in pixels between centroids, for future FOV estimation.
+                pattern_largest_distance = np.max(norm(image_centroids[:, None, :] - image_centroids[None, :, :], axis=-1))
+
+            # Compute star vectors using an estimate for the field-of-view in the x dimension
+            pattern_vectors = compute_vectors(image_centroids, fov_initial)
+            # Use this to compute the pattern
             pattern_dot_products = np.dot(pattern_vectors, pattern_vectors.T)[upper_tri_index]
             edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
             pattern_largest_edge = edge_angles_sorted[-1]
             pattern_edge_ratios = edge_angles_sorted[:-1] / pattern_largest_edge
+
                 
             # Possible hash codes to look up
             hash_code_space = [range(max(low, 0), min(high+1, p_bins)) for (low, high)
@@ -883,12 +889,16 @@ class Tetra3():
                     catalog_edges = np.append(catalog_edge_ratio * catalog_largest_edge,
                                               catalog_largest_edge)
 
-                    # Calculate actual fov by scaling estimate
-                    fov = catalog_largest_edge / pattern_largest_edge * fov_estimate
-                    
-                    # If the FOV is incorrect we can skip this immediately
-                    if fov_max_error is not None and abs(fov - fov_estimate) > fov_max_error:
-                        continue
+                    if fov_estimate is None:
+                        # Calculate actual fov from pattern pixel distance and catalog edge angle
+                        f = pattern_largest_distance / 2 / np.tan(catalog_largest_edge/2)
+                        fov = 2*np.arctan(width/2/f)
+                    else:
+                        # Calculate actual fov by scaling estimate
+                        fov = catalog_largest_edge / pattern_largest_edge * fov_initial
+                        # If the FOV is incorrect we can skip this immediately
+                        if fov_max_error is not None and abs(fov - fov_estimate) > fov_max_error:
+                            continue
 
                     # Recalculate vectors and uniquely sort them by distance from centroid
                     pattern_vectors = compute_vectors(image_centroids, fov)
