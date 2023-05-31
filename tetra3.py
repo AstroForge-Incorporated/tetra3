@@ -803,7 +803,8 @@ class Tetra3():
             # If no FOV given at all, guess middle of the range for a start
             fov_initial = np.deg2rad((self._db_props['max_fov'] + self._db_props['min_fov'])/2)
         else:
-            fov_initial = np.deg2rad(float(fov_estimate))
+            fov_estimate = np.deg2rad(float(fov_estimate))
+            fov_initial = fov_estimate
         if fov_max_error is not None:
             fov_max_error = np.deg2rad(float(fov_max_error))
         match_radius = float(match_radius)
