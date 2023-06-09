@@ -13,6 +13,12 @@ Included in the package:
     - :meth:`tetra3.get_centroids_from_image`: Extract spot centroids from an image.
     - :meth:`tetra3.crop_and_downsample_image`: Crop and/or downsample an image.
 
+The class :class:`tetra3.Tetra3` has three main methods for solving images:
+
+    - :meth:`Tetra3.solve_from_image`: Solve the camera pointing direction of an image.
+    - :meth:`Tetra3.solve_from_centroids`: As above, but from a list of star centroids.
+    - :meth:`Tetra3.generate_database`: Create a new database for your application.
+
 A default database (named `default_database`) is included in the repo, it is built for a maximum
 field of view of 12 degrees and and the default settings.
 
@@ -752,7 +758,7 @@ class Tetra3():
 
         Star locations (centroids) are found using :meth:`tetra3.get_centroids_from_image` and
         keyword arguments are passed along to this method. Every combination of the
-        `pattern_checking_stars` (default 6) brightest stars found is checked against the database
+        `pattern_checking_stars` (default 8) brightest stars found is checked against the database
         before giving up.
 
         Example:
@@ -793,12 +799,84 @@ class Tetra3():
                 dictionary except 'T_solve' and 'T_exctract'.
         """
         assert self.has_database, 'No database loaded'
-        self._logger.debug('Got solve from image with input: '
-                           + str((image, fov_estimate, fov_max_error,
-                                  pattern_checking_stars, match_radius, match_threshold,
-                                  kwargs)))
+        self._logger.debug('Got solve from image with input: ' + str((image, fov_estimate,
+            fov_max_error, pattern_checking_stars, match_radius, match_threshold, kwargs)))
+        image = np.asarray(image, dtype=np.float32)
+        (height, width) = image.shape[:2]
+        self._logger.debug('Image (height, width): ' + str((height, width)))
 
-        image = np.asarray(image)
+        # Run star extraction, passing kwargs along
+        t0_extract = precision_timestamp()
+        centroids = get_centroids_from_image(image, **kwargs)
+        t_extract = (precision_timestamp() - t0_extract)*1000
+        self._logger.debug('Found centroids, in time: ' + str((centroids, t_extract)))
+        # Run centroid solver, passing arguments along (could clean up with kwargs handler)
+        solution = self.solve_from_centroids(centroids, (height, width), 
+            fov_estimate=fov_estimate, fov_max_error=fov_max_error,
+            pattern_checking_stars=pattern_checking_stars, match_radius=match_radius,
+            match_threshold=match_threshold)
+        # Add extraction time to results and return
+        solution['T_extract'] = t_extract
+        return solution
+
+    def solve_from_centroids(self, star_centroids, size, fov_estimate=None, fov_max_error=None,
+                             pattern_checking_stars=8, match_radius=.01, match_threshold=1e-9):
+        """Solve for the sky location using a list of centroids.
+
+        Use :meth:`tetra3.get_centroids_from_image` or your own centroiding algorithm to find an
+        array of all the stars in your image and pass this result along with the resolution of the
+        image to this method. Every combination of the `pattern_checking_stars` (default 8)
+        brightest stars found is checked against the database before giving up. Since patterns
+        contain four stars, there will be 8 choose 4 (70) patterns tested against the database
+        by default.
+
+        Passing an estimated FOV and error bounds yields solutions much faster that letting tetra3
+        figure it out.
+
+        Example:
+            ::
+
+                # Get centroids from image with custom parameters
+                centroids = get_centroids_from_image(image, simga=2, filtsize=30)
+                # Solve from centroids
+                result = t3.solve_from_centroids(centroids, size=image.size, fov_estimate=13)
+
+        Args:
+            star_centroids (numpy.ndarray): (N,2) list of centroids, ordered by brightest first.
+                Each row is the (y, x) position of the star measured from the top left corner.
+            size (tuple of floats): (width, height) of the centroid coordinate system (i.e. 
+                image resolution).
+            fov_estimate (float, optional): Estimated field of view of the image in degrees. Default
+                None.
+            fov_max_error (float, optional): Maximum difference in field of view from the estimate
+                allowed for a match in degrees. Default None.
+            pattern_checking_stars (int, optional): Number of stars used to create possible
+                patterns to look up in database. Default 8.
+            match_radius (float, optional): Maximum distance to a star to be considered a match
+                as a fraction of the image field of view. Default 0.01.
+            match_threshold (float, optional): Maximum allowed mismatch probability to consider
+                a tested pattern a valid match. Default 1e-9.
+
+        Returns:
+            dict: A dictionary with the following keys is returned:
+                - 'RA': Right ascension of centre of image in degrees.
+                - 'Dec': Declination of centre of image in degrees.
+                - 'Roll': Rotation of image relative to north celestial pole.
+                - 'FOV': Calculated field of view of the provided image.
+                - 'RMSE': RMS residual of matched stars in arcseconds.
+                - 'Matches': Number of stars in the image matched to the database.
+                - 'Prob': Probability that the solution is a mismatch.
+                - 'T_solve': Time spent searching for a match in milliseconds.
+
+                If unsuccsessful in finding a match,  None is returned for all keys of the
+                dictionary except 'T_solve'.
+        """
+        assert self.has_database, 'No database loaded'
+        self._logger.debug('Got solve from centroids with input: '
+                           + str((star_centroids, size, fov_estimate, fov_max_error,
+                                  pattern_checking_stars, match_radius, match_threshold)))
+
+        star_centroids = np.asarray(star_centroids)
         if fov_estimate is None:
             # If no FOV given at all, guess middle of the range for a start
             fov_initial = np.deg2rad((self._db_props['max_fov'] + self._db_props['min_fov'])/2)
@@ -812,18 +890,16 @@ class Tetra3():
         pattern_checking_stars = int(pattern_checking_stars)
 
         # extract height (y) and width (x) of image
-        height, width = image.shape[0:2]
+        (height, width) = size[:2]
         # Extract relevant database properties
         num_stars = self._db_props['verification_stars_per_fov']
         p_size = self._db_props['pattern_size']
         p_bins = self._db_props['pattern_bins']
         p_max_err = self._db_props['pattern_max_error']
         upper_tri_index = np.triu_indices(p_size, 1)
-        # Run star extraction, passing kwargs along
-        t0_extract = precision_timestamp()
-        star_centroids = get_centroids_from_image(image, max_returned=num_stars, **kwargs)
-        t_extract = (precision_timestamp() - t0_extract)*1000
-        self._logger.debug('Extracted centroids:\n' + str(star_centroids))
+
+        star_centroids = star_centroids[:num_stars, :]
+        self._logger.debug('Trimmed centroid_input shape to: ' + str(star_centroids.shape))
 
         def compute_vectors(star_centroids, fov):
             """Get unit vectors from star centroids (pinhole camera)."""
@@ -1002,12 +1078,14 @@ class Tetra3():
                         self._logger.debug('RESID: %.2f' % residual + ' asec')
                         return {'RA': ra, 'Dec': dec, 'Roll': roll, 'FOV': np.rad2deg(fov),
                                 'RMSE': residual, 'Matches': len(match_tuples),
-                                'Prob': prob_mismatch, 'T_solve': t_solve, 'T_extract': t_extract}
+                                'Prob': prob_mismatch, 'T_solve': t_solve}
+        
+        # Failed to solve, get time and return None
         t_solve = (precision_timestamp() - t0_solve) * 1000
         self._logger.debug('FAIL: Did not find a match to the stars! It took '
                            + str(round(t_solve)) + ' ms.')
         return {'RA': None, 'Dec': None, 'Roll': None, 'FOV': None, 'RMSE': None, 'Matches': None,
-                'Prob': None, 'T_solve': t_solve, 'T_extract': t_extract}
+                'Prob': None, 'T_solve': t_solve}
 
     def _get_nearby_stars(self, vector, radius):
         """Get stars within radius radians of the vector."""
@@ -1319,18 +1397,17 @@ def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsampl
         extracted[:, 1:3] = extracted[:, 1:3] * downsample  # Scale centroid
     if crop:
         extracted[:, 1:3] = extracted[:, 1:3] + np.array([offs_h, offs_w])  # Offset centroid
-    # Return results
-    if return_moments and return_images:
-        return ((extracted[:, 1:3], extracted[:, 0], extracted[:, 6], extracted[:, 3:6],
-                 extracted[:, 7]), images_dict)
-    elif return_moments:
-        return (extracted[:, 1:3], extracted[:, 0], extracted[:, 6], extracted[:, 3:6],
-                extracted[:, 7])
-    elif return_images:
-        return (extracted[:, 1:3], images_dict)
-    else:
+    # Return results, default just the centroids 
+    if not any((return_moments, return_images)):
         return extracted[:, 1:3]
-
+    # Otherwise, build list of requested returned items
+    result = [extracted[:, 1:3]]
+    if return_moments:
+        result.append([extracted[:, 0], extracted[:, 6], extracted[:, 3:6],
+                extracted[:, 7]])
+    if return_images:
+        result.append(images_dict)
+    return tuple(result)
 
 def crop_and_downsample_image(image, crop=None, downsample=None, sum_when_downsample=True,
                               return_offsets=False):
@@ -1349,7 +1426,8 @@ def crop_and_downsample_image(image, crop=None, downsample=None, sum_when_downsa
             regions into one. The image width and height must be divisible by this factor.
         sum_when_downsample (bool, optional): If True (the default) downsampled pixels are
             calculated by summing the original pixel values. If False the mean is used.
-        return_offsets (bool, optional): If True, return the applied cropping offset.
+        return_offsets (bool, optional): If set to True, the applied cropping offset from the top
+            left corner is returned.
     Returns:
         numpy.ndarray or tuple: If `return_offsets=False` (the default) a 2D array with the cropped
         and dowsampled image is returned. If `return_offsets=True` is passed a tuple containing
