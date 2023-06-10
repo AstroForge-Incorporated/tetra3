@@ -1091,10 +1091,9 @@ class Tetra3():
         """Get stars within radius radians of the vector."""
         return np.where(np.dot(np.asarray(vector), self.star_table[:, 2:5].T) > np.cos(radius))[0]
 
-
 def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsample=None,
                              filtsize=25, bg_sub_mode='local_mean', sigma_mode='global_root_square',
-                             binary_open=True, centroid_window=None, max_area=None, min_area=None,
+                             binary_open=True, centroid_window=None, max_area=100, min_area=5,
                              max_sum=None, min_sum=None, max_axis_ratio=None, max_returned=None,
                              return_moments=False, return_images=False):
     """Extract spot centroids from an image and calculate statistics.
@@ -1178,13 +1177,14 @@ def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsampl
            to thresholded binary mask.
         centroid_window (int, optional): If supplied, recalculate statistics using a square window
             of the supplied size.
-        max_area (int, optional): Reject spots larger than this.
-        min_area (int, optional): Reject spots smaller than this.
-        max_sum (float, optional): Reject spots with a sum larger than this.
-        min_sum (float, optional): Reject spots with a sum smaller than this.
+        max_area (int, optional): Reject spots larger than this. Defaults to 100 pixels.
+        min_area (int, optional): Reject spots smaller than this. Defaults to 5 pixels.
+        max_sum (float, optional): Reject spots with a sum larger than this. Defaults to None.
+        min_sum (float, optional): Reject spots with a sum smaller than this. Defaults to None.
         max_axis_ratio (float, optional): Reject spots with a ratio of major over minor axis larger
-            than this.
-        max_returned (int, optional): Return at most this many spots.
+            than this. Defaults to None.
+        max_returned (int, optional): Return at most this many spots. Defaults to None, which
+            returns all spots. Will return in order of brightness (spot sum).
         return_moments (bool, optional): If set to True, return the calculated statistics (e.g.
             higher order moments, sum, area) together with the spot positions.
         return_images (bool, optional): If set to True, return a dictionary with partial results
@@ -1338,28 +1338,35 @@ def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsampl
             return (np.nan,)*8
         if max_area and area > max_area:
             return (np.nan,)*8
-        m0 = np.sum(a)
+        centroid = np.sum([a, x*a, y*a], axis=-1)
+        m0 = centroid[0]
         if min_sum and m0 < min_sum:
             return (np.nan,)*8
         if max_sum and m0 > max_sum:
             return (np.nan,)*8
-        m1_x = np.sum(x * a) / m0
-        m1_y = np.sum(y * a) / m0
-        m2_xx = max(0, np.sum((x - m1_x)**2 * a) / m0)
-        m2_yy = max(0, np.sum((y - m1_y)**2 * a) / m0)
-        m2_xy = np.sum((x - m1_x) * (y - m1_y) * a) / m0
-        major = np.sqrt(2 * (m2_xx + m2_yy + np.sqrt((m2_xx - m2_yy)**2 + 4 * m2_xy**2)))
-        minor = np.sqrt(2 * max(0, m2_xx + m2_yy - np.sqrt((m2_xx - m2_yy)**2 + 4 * m2_xy**2)))
-        if max_axis_ratio and minor <= 0:
-            return (np.nan,)*8
-        axis_ratio = major / max(minor, .000000001)
-        if max_axis_ratio and axis_ratio > max_axis_ratio:
-            return (np.nan,)*8
-        return (m0, m1_y+.5, m1_x+.5, m2_xx, m2_yy, m2_xy, area, axis_ratio)
+        centroid[1:] = centroid[1:] / m0
+        m1_x = centroid[1]
+        m1_y = centroid[2]
+        if return_moments or max_axis_ratio is not None:
+            # Need to calculate second order data about the regions, firstly the moments
+            # then use that to get major/minor axes.
+            m2_xx = max(0, np.sum((x - m1_x)**2 * a) / m0)
+            m2_yy = max(0, np.sum((y - m1_y)**2 * a) / m0)
+            m2_xy = np.sum((x - m1_x) * (y - m1_y) * a) / m0
+            major = np.sqrt(2 * (m2_xx + m2_yy + np.sqrt((m2_xx - m2_yy)**2 + 4 * m2_xy**2)))
+            minor = np.sqrt(2 * max(0, m2_xx + m2_yy - np.sqrt((m2_xx - m2_yy)**2 + 4 * m2_xy**2)))
+            if max_axis_ratio and minor <= 0:
+                return (np.nan,)*8
+            axis_ratio = major / max(minor, .000000001)
+            if max_axis_ratio and axis_ratio > max_axis_ratio:
+                return (np.nan,)*8
+            return (m0, m1_y+.5, m1_x+.5, m2_xx, m2_yy, m2_xy, area, axis_ratio)
+        else:
+            return (m0, m1_y+.5, m1_x+.5, np.nan, np.nan, np.nan, area, np.nan)
 
     tmp = scipy.ndimage.labeled_comprehension(image, labels, index, calc_stats, '8f', None,
                                               pass_positions=True)
-    valid = np.all(~np.isnan(tmp), axis=1)
+    valid = ~np.isnan(tmp[:, 0])
     extracted = tmp[valid, :]
     if return_images:
         images_dict['label_statistics'] = bin_mask.copy()
