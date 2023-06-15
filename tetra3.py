@@ -102,6 +102,7 @@ import scipy.optimize
 import scipy.stats
 import scipy
 from scipy.spatial import KDTree
+from scipy.spatial.distance import pdist
 
 _MAGIC_RAND = 2654435761
 _supported_databases = ('bsc5', 'hip_main', 'tyc_main')
@@ -708,8 +709,8 @@ class Tetra3():
             # retrieve the vectors of the stars in the pattern
             vectors = star_table[pattern, 2:5]
             
-            pattern_dot_products = np.dot(vectors, vectors.T)[upper_tri_index]
-            edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
+            # implement more accurate angle calculation
+            edge_angles_sorted = np.sort(2 * np.arcsin(.5 * pdist(vectors)))
             edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
 
             # convert edge ratio float to hash code by binning
@@ -924,12 +925,10 @@ class Tetra3():
 
             # Compute star vectors using an estimate for the field-of-view in the x dimension
             pattern_vectors = compute_vectors(image_centroids, fov_initial)
-            # Use this to compute the pattern
-            pattern_dot_products = np.dot(pattern_vectors, pattern_vectors.T)[upper_tri_index]
-            edge_angles_sorted = np.sort(np.arccos(pattern_dot_products))
+            # implement more accurate angle calculation
+            edge_angles_sorted = np.sort(2 * np.arcsin(.5 * pdist(pattern_vectors)))
             pattern_largest_edge = edge_angles_sorted[-1]
             pattern_edge_ratios = edge_angles_sorted[:-1] / pattern_largest_edge
-
                 
             # Possible hash codes to look up
             hash_code_space = [range(max(low, 0), min(high+1, p_bins)) for (low, high)
@@ -948,9 +947,12 @@ class Tetra3():
                 # Get star vectors for all matching hashes
                 catalog_star_vectors = self.star_table[matches, 2:5]
                 # Calculate pattern by angles between vectors
-                catalog_dot_products = catalog_star_vectors @ catalog_star_vectors.swapaxes(1,2)
-                catalog_pattern_edges = np.sort(np.arccos(
-                    catalog_dot_products[:, upper_tri_index[0], upper_tri_index[1]]))
+                # implement more accurate angle calculation
+                # this is a bit manual, I could not see a faster way
+                arr1 = np.take(catalog_star_vectors, upper_tri_index[0], axis=1)
+                arr2 = np.take(catalog_star_vectors, upper_tri_index[1], axis=1)
+                catalog_pattern_edges = np.sort(norm(arr1 - arr2, axis=-1))
+
                 catalog_largest_edges = catalog_pattern_edges[:, -1]
                 catalog_edge_ratios = catalog_pattern_edges[:, :-1] / catalog_largest_edges[:, None]
                 # Calculate difference to observed pattern and find sufficiencly close ones
