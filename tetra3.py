@@ -102,7 +102,7 @@ import scipy.optimize
 import scipy.stats
 import scipy
 from scipy.spatial import KDTree
-from scipy.spatial.distance import pdist
+from scipy.spatial.distance import pdist, cdist
 
 _MAGIC_RAND = 2654435761
 _supported_databases = ('bsc5', 'hip_main', 'tyc_main')
@@ -117,17 +117,16 @@ def _insert_at_index(item, index, table):
             table[i, :] = item
             return
 
-
-def _get_at_index(index, table):
-    """Gets from table with quadratic probing, returns list of all matches."""
+def _get_table_index_from_hash(hash_index, table):
+    """Gets from table with quadratic probing, returns list of all possibly matching indices."""
     max_ind = table.shape[0]
     found = []
     for c in itertools.count():
-        i = (index + c**2) % max_ind
+        i = (hash_index + c**2) % max_ind
         if all(table[i, :] == 0):
             return np.array(found)
         else:
-            found.append(table[i, :].squeeze())
+            found.append(i)
 
 
 def _key_to_index(key, bin_factor, max_index):
@@ -246,12 +245,14 @@ class Tetra3():
         self._logger.debug('Tetra3 Constructor called with load_database=' + str(load_database))
         self._star_table = None
         self._pattern_catalog = None
+        self._pattern_largest_edge = None
         self._verification_catalog = None
         self._db_props = {'pattern_mode': None, 'pattern_size': None, 'pattern_bins': None,
                           'pattern_max_error': None, 'max_fov': None, 'min_fov': None,
                           'star_catalog': None, 'pattern_stars_per_fov': None,
                           'verification_stars_per_fov': None, 'star_max_magnitude': None,
-                          'simplify_pattern': None, 'range_ra': None, 'range_dec': None}
+                          'simplify_pattern': None, 'range_ra': None, 'range_dec': None,
+                          'presort_patterns': None}
 
         if load_database is not None:
             self._logger.debug('Trying to load database')
@@ -298,6 +299,11 @@ class Tetra3():
         return self._pattern_catalog
 
     @property
+    def pattern_largest_edge(self):
+        """numpy.ndarray: Catalog of largest edges for each pattern in milliradian."""
+        return self._pattern_largest_edge
+
+    @property
     def database_properties(self):
         """dict: Dictionary of database properties.
 
@@ -336,6 +342,12 @@ class Tetra3():
             self._pattern_catalog = data['pattern_catalog']
             self._star_table = data['star_table']
             props_packed = data['props_packed']
+            try:
+                self._pattern_largest_edge = data['pattern_largest_edge']
+            except KeyError:
+                self._logger.debug('Database does not have largest edge stored, set to None.')
+                self._pattern_largest_edge = None
+
         self._logger.debug('Unpacking properties')
         for key in self._db_props.keys():
             try:
@@ -350,6 +362,9 @@ class Tetra3():
                     self._db_props[key] = props_packed['star_min_magnitude'][()]
                     self._logger.debug('Unpacked star_min_magnitude to: ' \
                         + str(self._db_props[key]))
+                elif key == 'presort_patterns':
+                    self._db_props[key] = False
+                    self._logger.debug('No presort_patterns key, set to False')
                 else:
                     self._logger.warning('Missing key in database (likely version difference): ' + str(key))
                     #raise
@@ -386,7 +401,8 @@ class Tetra3():
                                  self._db_props['star_max_magnitude'],
                                  self._db_props['simplify_pattern'],
                                  self._db_props['range_ra'],
-                                 self._db_props['range_dec']),
+                                 self._db_props['range_dec'],
+                                 self._db_props['presort_patterns']),
                                 dtype=[('pattern_mode', 'U64'),
                                        ('pattern_size', np.uint16),
                                        ('pattern_bins', np.uint16),
@@ -399,17 +415,21 @@ class Tetra3():
                                        ('star_max_magnitude', np.float32),
                                        ('simplify_pattern', bool),
                                        ('range_ra', np.float32, (2,)),
-                                       ('range_dec', np.float32, (2,))])
+                                       ('range_dec', np.float32, (2,)),
+                                       ('presort_patterns', bool)])
 
         self._logger.debug('Packed properties into: ' + str(props_packed))
         self._logger.debug('Saving as compressed numpy archive')
-        np.savez_compressed(path, star_table=self.star_table,
-                            pattern_catalog=self.pattern_catalog, props_packed=props_packed)
+        np.savez_compressed(path, star_table = self.star_table,
+                            pattern_catalog = self.pattern_catalog, 
+                            pattern_largest_edge = self.pattern_largest_edge,
+                            props_packed = props_packed)
 
     def generate_database(self, max_fov, min_fov=None, save_as=None, star_catalog='bsc5', pattern_stars_per_fov=10,
                           verification_stars_per_fov=30, star_max_magnitude=7,
                           pattern_max_error=.005, simplify_pattern=False,
-                          range_ra = None, range_dec = None):
+                          range_ra = None, range_dec = None,
+                          presort_patterns = True, save_largest_edge = True):
         """Create a database and optionally save it to file.
         
         Takes a few minutes for a small (large FOV) database, can take many hours for a large (small FOV) database.
@@ -464,7 +484,12 @@ class Tetra3():
                 If set, only stars within the given right ascension will be kept in the database.
             range_dec (tuple, optional): Tuple with the range (min_dec, max_dec) in degrees (-90 to 90).
                 If set, only stars within the give declination will be kept in the database.
-
+            presort_patterns (bool, optional): If True (the default), all star patterns will be
+                sorted during database generation to avoid doing it when solving. Makes database
+                generation slower but the solver faster.
+            save_largest_edge (bool, optional): If True (the default), the absolute size of each
+                pattern is stored (via its largest edge angle) in a separate array. This makes the
+                database larger but the solver faster.
         """
         self._logger.debug('Got generate pattern catalogue with input: '
                            + str((max_fov, min_fov, save_as, star_catalog, pattern_stars_per_fov,
@@ -487,6 +512,8 @@ class Tetra3():
         pattern_size = 4
         pattern_bins = round(1/4/pattern_max_error)
         current_year = datetime.utcnow().year
+        presort_patterns = bool(presort_patterns)
+        save_largest_edge = bool(save_largest_edge)
         
         catalog_file_full_pathname = Path(__file__).parent / star_catalog
         # Add .dat suffix for hip and tyc if not present
@@ -687,7 +714,7 @@ class Tetra3():
         # Create all pattens by calculating and sorting edge ratios and inserting into hash table
         self._logger.info('Start building catalogue.')
         catalog_length = 2 * len(pattern_list)
-        # Determine type to make sure the biggest index will fit
+        # Determine type to make sure the biggest index will fit, create pattern catalogue
         max_index = np.max(np.array(pattern_list))
         if max_index <= np.iinfo('uint8').max:
             pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint8)
@@ -695,9 +722,12 @@ class Tetra3():
             pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint16)
         else:
             pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint32)
-
         self._logger.info('Catalog size ' + str(pattern_catalog.shape) + ' and type ' + str(pattern_catalog.dtype) + '.')
         
+        if save_largest_edge:
+            pattern_largest_edge = np.zeros(catalog_length, dtype=np.float16)
+            self._logger.info('Storing larges edges as type ' + str(pattern_largest_edge.dtype))
+
         # Indices to extract from dot product matrix (above diagonal)
         upper_tri_index = np.triu_indices(pattern_size, 1)
         
@@ -716,6 +746,14 @@ class Tetra3():
             # convert edge ratio float to hash code by binning
             hash_code = tuple((edge_ratios * pattern_bins).astype(int))
             hash_index = _key_to_index(hash_code, pattern_bins, catalog_length)
+
+            if presort_patterns:
+                # find the centroid, or average position, of the star pattern
+                pattern_centroid = np.mean(vectors, axis=0)
+                # calculate each star's radius, or Euclidean distance from the centroid
+                pattern_radii = cdist(vectors, pattern_centroid[None, :]).flatten()
+                # use the radii to uniquely order the pattern, used for future matching
+                pattern = np.array(pattern)[np.argsort(pattern_radii)]
             
             # use quadratic probing to find an open space in the pattern catalog to insert
             for index in ((hash_index + offset ** 2) % catalog_length
@@ -723,6 +761,9 @@ class Tetra3():
                 # if the current slot is empty, add the pattern
                 if not pattern_catalog[index][0]:
                     pattern_catalog[index] = pattern
+                    if save_largest_edge:
+                        # Store as milliradian to better use float16 range
+                        pattern_largest_edge[index] = edge_angles_sorted[-1]*1000
                     break
         
         self._logger.info('Finished generating database.')
@@ -731,6 +772,8 @@ class Tetra3():
 
         self._star_table = star_table
         self._pattern_catalog = pattern_catalog
+        if save_largest_edge:
+            self._pattern_largest_edge = pattern_largest_edge
         self._db_props['pattern_mode'] = 'edge_ratio'
         self._db_props['pattern_size'] = pattern_size
         self._db_props['pattern_bins'] = pattern_bins
@@ -744,6 +787,7 @@ class Tetra3():
         self._db_props['simplify_pattern'] = simplify_pattern
         self._db_props['range_ra'] = range_ra
         self._db_props['range_dec'] = range_dec
+        self._db_props['presort_patterns'] = presort_patterns
         self._logger.debug(self._db_props)
 
         if save_as is not None:
@@ -810,7 +854,7 @@ class Tetra3():
         t0_extract = precision_timestamp()
         centroids = get_centroids_from_image(image, **kwargs)
         t_extract = (precision_timestamp() - t0_extract)*1000
-        self._logger.debug('Found centroids, in time: ' + str((centroids, t_extract)))
+        self._logger.debug('Found this many centroids, in time: ' + str((len(centroids), t_extract)))
         # Run centroid solver, passing arguments along (could clean up with kwargs handler)
         solution = self.solve_from_centroids(centroids, (height, width), 
             fov_estimate=fov_estimate, fov_max_error=fov_max_error,
@@ -874,7 +918,7 @@ class Tetra3():
         """
         assert self.has_database, 'No database loaded'
         self._logger.debug('Got solve from centroids with input: '
-                           + str((star_centroids, size, fov_estimate, fov_max_error,
+                           + str((len(star_centroids), size, fov_estimate, fov_max_error,
                                   pattern_checking_stars, match_radius, match_threshold)))
 
         star_centroids = np.asarray(star_centroids)
@@ -897,6 +941,7 @@ class Tetra3():
         p_size = self._db_props['pattern_size']
         p_bins = self._db_props['pattern_bins']
         p_max_err = self._db_props['pattern_max_error']
+        presorted = self._db_props['presort_patterns']
         upper_tri_index = np.triu_indices(p_size, 1)
 
         star_centroids = star_centroids[:num_stars, :]
@@ -940,9 +985,21 @@ class Tetra3():
                                  for code in itertools.product(*hash_code_space)):
                 hash_code = tuple(hash_code)
                 hash_index = _key_to_index(hash_code, p_bins, self.pattern_catalog.shape[0])
-                matches = _get_at_index(hash_index, self.pattern_catalog)
-                if len(matches) == 0:
+                match_inds = _get_table_index_from_hash(hash_index, self.pattern_catalog)
+                if len(match_inds) == 0:
                     continue
+
+                if self.pattern_largest_edge is not None \
+                        and fov_estimate is not None \
+                        and fov_max_error is not None:
+                    # Can immediately compare FOV to patterns to remove mismatches
+                    largest_edge = self.pattern_largest_edge[match_inds]
+                    fov2 = largest_edge / pattern_largest_edge * fov_initial / 1000
+                    keep = abs(fov2 - fov_estimate) < fov_max_error
+                    match_inds = match_inds[keep]
+                    if len(match_inds) == 0:
+                        continue
+                matches = self.pattern_catalog[match_inds, :]
 
                 # Get star vectors for all matching hashes
                 catalog_star_vectors = self.star_table[matches, 2:5]
@@ -964,10 +1021,6 @@ class Tetra3():
                     catalog_edge_ratio = catalog_edge_ratios[index, :]
                     catalog_largest_edge = catalog_largest_edges[index]
 
-                    # compute the catalogue pattern's aboslute edge angles for error estimation
-                    catalog_edges = np.append(catalog_edge_ratio * catalog_largest_edge,
-                                              catalog_largest_edge)
-
                     if fov_estimate is None:
                         # Calculate actual fov from pattern pixel distance and catalog edge angle
                         f = pattern_largest_distance / 2 / np.tan(catalog_largest_edge/2)
@@ -984,18 +1037,19 @@ class Tetra3():
                     # find the centroid, or average position, of the star pattern
                     pattern_centroid = np.mean(pattern_vectors, axis=0)
                     # calculate each star's radius, or Euclidean distance from the centroid
-                    pattern_radii = [norm(star_vector - pattern_centroid)
-                                     for star_vector in pattern_vectors]
+                    pattern_radii = cdist(pattern_vectors, pattern_centroid[None, :]).flatten()
                     # use the radii to uniquely order the pattern's star vectors so they can be
                     # matched with the catalog vectors
-                    pattern_sorted_vectors = np.array(pattern_vectors)[
-                                                                       np.argsort(pattern_radii)]
-                    # find the centroid, or average position, of the star pattern
-                    catalog_centroid = np.mean(catalog_vectors, axis=0)
-                    # calculate each star's radius, or Euclidean distance from the centroid
-                    catalog_radii = [norm(vector - catalog_centroid) for vector in catalog_vectors]
-                    # use the radii to uniquely order the catalog vectors
-                    catalog_sorted_vectors = catalog_vectors[np.argsort(catalog_radii)]
+                    pattern_sorted_vectors = np.array(pattern_vectors)[np.argsort(pattern_radii)]
+                    if presorted:
+                        catalog_sorted_vectors = catalog_vectors
+                    else:
+                        # find the centroid, or average position, of the star pattern
+                        catalog_centroid = np.mean(catalog_vectors, axis=0)
+                        # calculate each star's radius, or Euclidean distance from the centroid
+                        catalog_radii = cdist(catalog_vectors, catalog_centroid[None, :]).flatten()
+                        # use the radii to uniquely order the catalog vectors
+                        catalog_sorted_vectors = catalog_vectors[np.argsort(catalog_radii)]
 
                     # calculate the least-squares rotation matrix from catalog to image frame
                     def find_rotation_matrix(image_vectors, catalog_vectors):
