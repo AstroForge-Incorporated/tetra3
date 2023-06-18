@@ -1072,8 +1072,7 @@ class Tetra3():
                                                            catalog_sorted_vectors)
                     # calculate all star vectors using the new field-of-view
                     all_star_vectors = compute_vectors(star_centroids, fov)
-                    rotated_star_vectors = np.array([np.dot(rotation_matrix.T, star_vector)
-                                                     for star_vector in all_star_vectors])
+                    rotated_star_vectors = np.dot(rotation_matrix.T, all_star_vectors.T).T
                     # Find all star vectors inside the (diagonal) field of view for matching
                     image_center_vector = rotation_matrix[0, :]
                     fov_diagonal_rad = fov * np.sqrt(width**2 + height**2) / width
@@ -1081,19 +1080,28 @@ class Tetra3():
                     nearby_star_inds = self._get_nearby_stars(image_center_vector, fov_diagonal_rad/2)[:num_stars]
                     nearby_star_vectors = self.star_table[nearby_star_inds, 2:5]
                     # Match the nearby star vectors to the proposed measured star vectors
-                    match_tuples = []
-                    for ind, measured_vec in enumerate(rotated_star_vectors):
-                        within_match_radius = (np.dot(measured_vec.reshape((1, 3)),
-                                                      nearby_star_vectors.transpose())
-                                               > np.cos(match_radius * fov)).flatten()
-                        if sum(within_match_radius) == 1:  # If exactly one matching star:
-                            match_ind = within_match_radius.nonzero()[0][0]
-                            match_tuples.append((all_star_vectors[ind],
-                                                 nearby_star_vectors[match_ind]))
+                    # Each row is a rotated star vector, each column is a nearby star to match with
+                    dists = cdist(rotated_star_vectors, nearby_star_vectors)
+                    # Maximum distance for match, match_radius * fov
+                    match_th = 2* np.sin(match_radius * fov / 2)
+                    # First col is rotated vector, second col is catalogue vector
+                    matched_stars = np.argwhere(dists < match_th)
+                    # Make sure we only have unique 1-1 matches
+                    matched_stars = matched_stars[np.unique(matched_stars[:, 0], return_index=True)[1], :]
+                    matched_stars = matched_stars[np.unique(matched_stars[:, 1], return_index=True)[1], :]
+
                     # Statistical reasoning for probability that current match is incorrect:
                     num_extracted_stars = len(all_star_vectors)
                     num_nearby_catalog_stars = len(nearby_star_vectors)
-                    num_star_matches = len(match_tuples)
+                    num_star_matches = matched_stars.shape[0]
+
+                    # Match array holds all the pairs of good matches
+                    # [0, :, :] is Nx3 of centroid vectors (not rotated)
+                    # [1, :, :] is Nx3 of catalogue vectors
+                    match_array = np.zeros((2, num_star_matches, 3))
+                    match_array[0, :, :] = all_star_vectors[matched_stars[:, 0], :]
+                    match_array[1, :, :] = nearby_star_vectors[matched_stars[:, 1], :]
+                    
                     # Probability that a single star is a mismatch
                     prob_single_star_mismatch = \
                         1 - (1 - num_nearby_catalog_stars * match_radius**2)
@@ -1103,7 +1111,7 @@ class Tetra3():
                                                           num_extracted_stars,
                                                           1 - prob_single_star_mismatch)
                     self._logger.debug("Possible match: Stars = %d, P_mismatch = %.2e, FOV = %.5fdeg" \
-                        % (len(match_tuples), prob_mismatch, np.rad2deg(fov)))
+                        % (num_star_matches, prob_mismatch, np.rad2deg(fov)))
                     if prob_mismatch < match_threshold:
                         # Solved in this time
                         t_solve = (precision_timestamp() - t0_solve)*1000
@@ -1111,12 +1119,8 @@ class Tetra3():
                         self._logger.debug("MATCH ACCEPTED")
                         self._logger.debug("Prob: %.4g" % prob_mismatch)
                         # if a match has been found, recompute rotation with all matched vectors
-                        rotation_matrix = find_rotation_matrix(*zip(*match_tuples))
-                        # Residuals calculation
-                        # [0, :, :] is Nx3 of centroid vectors (not rotated)
-                        # [1, :, :] is Nx3 of catalogue vectors
-                        match_array = np.array(match_tuples).swapaxes(0, 1)
-                        # Rotate centroid vectors to match
+                        rotation_matrix = find_rotation_matrix(match_array[0, :, :], match_array[1, :, :])
+                        # Residuals calculation, first rotate centroid vectors to match
                         match_array[0, :, :] = np.dot(rotation_matrix.T, match_array[0, :, :].T).T
                         # Calculate angles with more accurate formula
                         distance = norm(match_array[0, :, :] - match_array[1, :, :], axis=1)
@@ -1133,11 +1137,11 @@ class Tetra3():
                         self._logger.debug("DEC:   %03.8f" % dec + ' deg')
                         self._logger.debug("ROLL:  %03.8f" % roll + ' deg')
                         self._logger.debug("FOV:   %03.8f" % np.rad2deg(fov) + ' deg')
-                        self._logger.debug('MATCH: %i' % len(match_tuples) + ' stars')
+                        self._logger.debug('MATCH: %i' % num_star_matches + ' stars')
                         self._logger.debug('SOLVE: %.2f' % round(t_solve, 2) + ' ms')
                         self._logger.debug('RESID: %.2f' % residual + ' asec')
                         return {'RA': ra, 'Dec': dec, 'Roll': roll, 'FOV': np.rad2deg(fov),
-                                'RMSE': residual, 'Matches': len(match_tuples),
+                                'RMSE': residual, 'Matches': num_star_matches,
                                 'Prob': prob_mismatch, 'T_solve': t_solve}
         
         # Failed to solve, get time and return None
