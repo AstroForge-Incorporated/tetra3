@@ -421,7 +421,7 @@ class Tetra3():
         self._logger.debug('Packed properties into: ' + str(props_packed))
         self._logger.debug('Saving as compressed numpy archive')
         np.savez_compressed(path, star_table = self.star_table,
-                            pattern_catalog = self.pattern_catalog, 
+                            pattern_catalog = self.pattern_catalog,
                             pattern_largest_edge = self.pattern_largest_edge,
                             props_packed = props_packed)
 
@@ -863,7 +863,7 @@ class Tetra3():
         # Add extraction time to results and return
         solution['T_extract'] = t_extract
         return solution
-
+    
     def solve_from_centroids(self, star_centroids, size, fov_estimate=None, fov_max_error=None,
                              pattern_checking_stars=8, match_radius=.01, match_threshold=1e-9):
         """Solve for the sky location using a list of centroids.
@@ -1113,11 +1113,15 @@ class Tetra3():
                         # if a match has been found, recompute rotation with all matched vectors
                         rotation_matrix = find_rotation_matrix(*zip(*match_tuples))
                         # Residuals calculation
-                        measured_vs_catalog = [(np.dot(rotation_matrix.T, pair[0]), pair[1])
-                                               for pair in match_tuples]
-                        angles = np.arcsin([norm(np.cross(m, c)) / norm(m) / norm(c)
-                                            for (m, c) in measured_vs_catalog])
-                        residual = np.rad2deg(np.sqrt(np.mean(angles**2))) * 3600
+                        # [0, :, :] is Nx3 of centroid vectors (not rotated)
+                        # [1, :, :] is Nx3 of catalogue vectors
+                        match_array = np.array(match_tuples).swapaxes(0, 1)
+                        # Rotate centroid vectors to match
+                        match_array[0, :, :] = np.dot(rotation_matrix.T, match_array[0, :, :].T).T
+                        # Calculate angles with more accurate formula
+                        distance = norm(match_array[0, :, :] - match_array[1, :, :], axis=1)
+                        angle = 2 * np.arcsin(.5 * distance)
+                        residual = np.rad2deg(np.sqrt(np.mean(angle**2))) * 3600
                         # extract right ascension, declination, and roll from rotation matrix
                         ra = np.rad2deg(np.arctan2(rotation_matrix[0, 1],
                                                    rotation_matrix[0, 0])) % 360
