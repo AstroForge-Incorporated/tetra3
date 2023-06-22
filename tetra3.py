@@ -640,6 +640,7 @@ class Tetra3():
         # initialize pattern, which will contain pattern_size star ids
         pattern = [None] * pattern_size
         for pattern_fov in reversed(pattern_fovs):
+            keep_at_fov = np.full(num_entries, False)
             if fov_divisions == 1:
                 # Single scale database, trim to min_fov, make patterns up to max_fov
                 pattern_stars_separation = .6 * min_fov / np.sqrt(pattern_stars_per_fov)
@@ -652,25 +653,28 @@ class Tetra3():
             # Loop through all stars in database, create set of of pattern stars
             # Note that each loop just adds stars to the previous version (between old ones)
             # so we can skip all indices already kept
-            for star_ind in np.compress(np.logical_not(keep_for_patterns), range(num_entries)):
+            for star_ind in range(num_entries):
                 vector = all_star_vectors[star_ind, :]
                 # Check if any kept stars are within the pattern checking separation
                 within_pattern_separation = vector_kd_tree.query_ball_point(vector,
                     pattern_stars_separation)
-                occupied_for_pattern = np.any(keep_for_patterns[within_pattern_separation])
+                occupied_for_pattern = np.any(keep_at_fov[within_pattern_separation])
                 # If there isn't a star to close, add this to the table and carry on
+                # Add to both this FOV specifically and the general table.
                 if not occupied_for_pattern:
                     keep_for_patterns[star_ind] = True
+                    keep_at_fov[star_ind] = True
             
-            self._logger.info('Stars for creating patterns: ' + str(np.sum(keep_for_patterns)) + '.')
+            self._logger.info('Stars for patterns at this FOV: ' + str(np.sum(keep_at_fov)) + '.')
+            self._logger.info('Stars for patterns total: ' + str(np.sum(keep_for_patterns)) + '.')
             # Clip out table of the kept stars
-            pattern_star_table = star_table[keep_for_patterns, :]
+            pattern_star_table = star_table[keep_at_fov, :]
             # Insert into KD tree for neighbour lookup
             pattern_kd_tree = KDTree(pattern_star_table[:, 2:5])
             # List of stars available (not yet used to create patterns)
             available_stars = [True] * pattern_star_table.shape[0]
             # Index conversion from pattern_star_table to main star_table
-            pattern_index = np.nonzero(keep_for_patterns)[0].tolist()
+            pattern_index = np.nonzero(keep_at_fov)[0].tolist()
 
             # Loop throgh all pattern stars
             for pattern[0] in range(pattern_star_table.shape[0]):
