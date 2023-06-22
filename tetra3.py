@@ -810,7 +810,7 @@ class Tetra3():
             self._logger.info('Skipping database file generation.')
 
     def solve_from_image(self, image, fov_estimate=None, fov_max_error=None,
-                         pattern_checking_stars=8, match_radius=.01, match_threshold=1e-9,
+                         pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3,
                          **kwargs):
         """Solve for the sky location of an image.
 
@@ -836,8 +836,8 @@ class Tetra3():
                 patterns to look up in database.
             match_radius (float, optional): Maximum distance to a star to be considered a match
                 as a fraction of the image field of view.
-            match_threshold (float, optional): Maximum allowed mismatch probability to consider
-                a tested pattern a valid match.
+            match_threshold (float, optional): Maximum allowed false-positive probability to accept
+                a tested pattern a valid match. Default 1e-3. NEW: Corrected for the database size.
             **kwargs (optional): Other keyword arguments passed to
                 :meth:`tetra3.get_centroids_from_image`.
 
@@ -849,7 +849,7 @@ class Tetra3():
                 - 'FOV': Calculated field of view of the provided image.
                 - 'RMSE': RMS residual of matched stars in arcseconds.
                 - 'Matches': Number of stars in the image matched to the database.
-                - 'Prob': Probability that the solution is a mismatch.
+                - 'Prob': Probability that the solution is a false-positive.
                 - 'T_solve': Time spent searching for a match in milliseconds.
                 - 'T_extract': Time spent exctracting star centroids in milliseconds.
 
@@ -878,7 +878,7 @@ class Tetra3():
         return solution
 
     def solve_from_centroids(self, star_centroids, size, fov_estimate=None, fov_max_error=None,
-                             pattern_checking_stars=8, match_radius=.01, match_threshold=1e-9):
+                             pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3):
         """Solve for the sky location using a list of centroids.
 
         Use :meth:`tetra3.get_centroids_from_image` or your own centroiding algorithm to find an
@@ -912,8 +912,8 @@ class Tetra3():
                 patterns to look up in database. Default 8.
             match_radius (float, optional): Maximum distance to a star to be considered a match
                 as a fraction of the image field of view. Default 0.01.
-            match_threshold (float, optional): Maximum allowed mismatch probability to consider
-                a tested pattern a valid match. Default 1e-9.
+            match_threshold (float, optional): Maximum allowed false-positive probability to accept
+                a tested pattern a valid match. Default 1e-3. NEW: Corrected for the database size.
 
         Returns:
             dict: A dictionary with the following keys is returned:
@@ -923,7 +923,7 @@ class Tetra3():
                 - 'FOV': Calculated field of view of the provided image.
                 - 'RMSE': RMS residual of matched stars in arcseconds.
                 - 'Matches': Number of stars in the image matched to the database.
-                - 'Prob': Probability that the solution is a mismatch.
+                - 'Prob': Probability that the solution is a false-positive.
                 - 'T_solve': Time spent searching for a match in milliseconds.
 
                 If unsuccsessful in finding a match,  None is returned for all keys of the
@@ -944,7 +944,10 @@ class Tetra3():
         if fov_max_error is not None:
             fov_max_error = np.deg2rad(float(fov_max_error))
         match_radius = float(match_radius)
-        match_threshold = float(match_threshold)
+        num_patterns = self.pattern_catalog.shape[0] // 2
+        match_threshold = float(match_threshold) / num_patterns
+        self._logger.debug('Set threshold to: ' + str(match_threshold) + ', have '
+            + str(num_patterns) + ' patterns.')
         pattern_checking_stars = int(pattern_checking_stars)
 
         # extract height (y) and width (x) of image
@@ -1131,7 +1134,8 @@ class Tetra3():
                         t_solve = (precision_timestamp() - t0_solve)*1000
                         # diplay mismatch probability in scientific notation
                         self._logger.debug("MATCH ACCEPTED")
-                        self._logger.debug("Prob: %.4g" % prob_mismatch)
+                        self._logger.debug("Prob: %.4g, corr: %.4g"
+                            % (prob_mismatch, prob_mismatch*num_patterns))
                         # if a match has been found, recompute rotation with all matched vectors
                         rotation_matrix = find_rotation_matrix(match_array[0, :, :], match_array[1, :, :])
                         # Residuals calculation, first rotate centroid vectors to match
@@ -1156,7 +1160,7 @@ class Tetra3():
                         self._logger.debug('RESID: %.2f' % residual + ' asec')
                         return {'RA': ra, 'Dec': dec, 'Roll': roll, 'FOV': np.rad2deg(fov),
                                 'RMSE': residual, 'Matches': num_star_matches,
-                                'Prob': prob_mismatch, 'T_solve': t_solve}
+                                'Prob': prob_mismatch*num_patterns, 'T_solve': t_solve}
         
         # Failed to solve, get time and return None
         t_solve = (precision_timestamp() - t0_solve) * 1000
