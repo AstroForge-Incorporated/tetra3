@@ -19,8 +19,8 @@ The class :class:`tetra3.Tetra3` has three main methods for solving images:
     - :meth:`Tetra3.solve_from_centroids`: As above, but from a list of star centroids.
     - :meth:`Tetra3.generate_database`: Create a new database for your application.
 
-A default database (named `default_database`) is included in the repo, it is built for a maximum
-field of view of 12 degrees and and the default settings.
+A default database (named `default_database`) is included in the repo, it is built for a field of
+view range of 10 to 20 degrees with stars up to magntude 8.
 
 It is critical to set up the centroid extraction parameters (see :meth:`get_centroids_from_image`
 to reliably return star centroids from a given image. After this is done, pass the same keyword
@@ -213,12 +213,13 @@ class Tetra3():
 
     Args:
         load_database (str or pathlib.Path, optional): Database to load. Will call
-            :meth:`load_database` with the provided argument after creating instance.
+            :meth:`load_database` with the provided argument after creating instance. Defaults to
+            'default_database'. Can set to None to create Tetra3 object without loaded database.
         debug_folder (pathlib.Path, optional): The folder for debug logging. If None (the default)
             the folder tetra3/debug will be used/created.
 
     """
-    def __init__(self, load_database=None, debug_folder=None):
+    def __init__(self, load_database='default_database', debug_folder=None):
         # Logger setup
         self._debug_folder = None
         if debug_folder is None:
@@ -423,10 +424,15 @@ class Tetra3():
 
         self._logger.debug('Packed properties into: ' + str(props_packed))
         self._logger.debug('Saving as compressed numpy archive')
-        np.savez_compressed(path, star_table = self.star_table,
-                            pattern_catalog = self.pattern_catalog,
-                            pattern_largest_edge = self.pattern_largest_edge,
-                            props_packed = props_packed)
+        if self.pattern_largest_edge is not None:
+            np.savez_compressed(path, star_table = self.star_table,
+                                pattern_catalog = self.pattern_catalog,
+                                pattern_largest_edge = self.pattern_largest_edge,
+                                props_packed = props_packed)
+        else:
+            np.savez_compressed(path, star_table = self.star_table,
+                                pattern_catalog = self.pattern_catalog,
+                                props_packed = props_packed)
 
     def generate_database(self, max_fov, min_fov=None, save_as=None,
                           star_catalog='tyc_main', pattern_stars_per_fov=10,
@@ -458,13 +464,17 @@ class Tetra3():
             <https://cdsarc.u-strasbg.fr/ftp/cats/I/239/> (save the appropriate .dat file). The
             downloaded catalogue must be placed in the tetra3 directory.
 
-        Example:
+        Example, the default database was generated with:
             ::
 
                 # Create instance
                 t3 = tetra3.Tetra3()
                 # Generate and save database
-                t3.generate_database(max_fov=20, save_as='my_database_name')
+                t3.generate_database(max_fov=20, min_fov=10, save_largest_edge=False, save_as='default_database')
+
+        and took 30 minutes to build. If you know your FOV, set max_fov to this value and leave min_fov as None.
+        Setting save_largest_edge to False makes the database smaller, which was done for the default but is not
+        recommended generally.
 
         Args:
             max_fov (float): Maximum angle (in degrees) between stars in the same pattern.
