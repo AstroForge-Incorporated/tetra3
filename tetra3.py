@@ -1081,9 +1081,7 @@ class Tetra3():
                     # calculate the least-squares rotation matrix from catalog to image frame
                     def find_rotation_matrix(image_vectors, catalog_vectors):
                         # find the covariance matrix H between the image and catalog vectors
-                        H = np.sum([np.dot(image_vectors[i].reshape((3, 1)),
-                                           catalog_vectors[i].reshape((1, 3)))
-                                    for i in range(len(image_vectors))], axis=0)
+                        H = np.dot(image_vectors.T, catalog_vectors)
                         # use singular value decomposition to find the rotation matrix
                         (U, S, V) = np.linalg.svd(H)
                         rotation_matrix = np.dot(U, V)
@@ -1180,8 +1178,20 @@ class Tetra3():
                 'Prob': None, 'T_solve': t_solve}
 
     def _get_nearby_stars(self, vector, radius):
-        """Get stars within radius radians of the vector."""
-        return np.where(np.dot(np.asarray(vector), self.star_table[:, 2:5].T) > np.cos(radius))[0]
+        """Get star indices within radius radians of the vector."""
+        # Stars must be within this cartesian cube
+        max_dist = 2*np.sin(radius/2)
+        range_x = vector[0] + np.array([-max_dist, max_dist])
+        range_y = vector[1] + np.array([-max_dist, max_dist])
+        range_z = vector[2] + np.array([-max_dist, max_dist])
+        # Per axis, find where data is within the range, then combine
+        possible_x = (self.star_table[:, 2] > range_x[0]) & (self.star_table[:, 2] < range_x[1])
+        possible_y = (self.star_table[:, 3] > range_y[0]) & (self.star_table[:, 3] < range_y[1])
+        possible_z = (self.star_table[:, 4] > range_z[0]) & (self.star_table[:, 4] < range_z[1])
+        possible = np.nonzero(possible_x & possible_y & possible_z)[0]
+        # Find those within the given radius
+        nearby = np.dot(np.asarray(vector), self.star_table[possible, 2:5].T) > np.cos(radius)
+        return possible[nearby]
 
 def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsample=None,
                              filtsize=25, bg_sub_mode='local_mean', sigma_mode='global_root_square',
