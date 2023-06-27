@@ -439,15 +439,16 @@ class Tetra3():
                           verification_stars_per_fov=30, star_max_magnitude=8,
                           pattern_max_error=.005, simplify_pattern=False,
                           range_ra=None, range_dec=None,
-                          presort_patterns=True, save_largest_edge=True,
+                          presort_patterns=True, save_largest_edge=False,
                           multiscale_step=1.5):
         """Create a database and optionally save it to file.
         
         Takes a few minutes for a small (large FOV) database, can take many hours for a large (small FOV) database.
-        The primary knowledge necessary is the FOV you want the database to work for. For a single application, set
+        The primary knowledge necessary is the FOV you want the database to work for and the highest magnitude of
+        stars you want to include. For a single application, set
         max_fov equal to your known FOV. Alternatively, set max_fov and min_fov to the range of FOVs you want the 
         database to be built for. For large difference in max_fov and min_fov, a multiscale database will be built
-        where successively smaller patterns are generated to cover a wide range of applications.
+        where patterns of several different sizes on the sky will be included.
 
         Note:
             If you wish to build you own database you must download a star catalogue. tetra3 supports three options,
@@ -470,11 +471,9 @@ class Tetra3():
                 # Create instance
                 t3 = tetra3.Tetra3()
                 # Generate and save database
-                t3.generate_database(max_fov=20, min_fov=10, save_largest_edge=False, save_as='default_database')
+                t3.generate_database(max_fov=20, min_fov=10, star_max_magnitude=8, save_as='default_database')
 
         and took 30 minutes to build. If you know your FOV, set max_fov to this value and leave min_fov as None.
-        Setting save_largest_edge to False makes the database smaller, which was done for the default but is not
-        recommended generally.
 
         Args:
             max_fov (float): Maximum angle (in degrees) between stars in the same pattern.
@@ -503,7 +502,7 @@ class Tetra3():
             presort_patterns (bool, optional): If True (the default), all star patterns will be
                 sorted during database generation to avoid doing it when solving. Makes database
                 generation slower but the solver faster.
-            save_largest_edge (bool, optional): If True (the default), the absolute size of each
+            save_largest_edge (bool, optional): If True (default False), the absolute size of each
                 pattern is stored (via its largest edge angle) in a separate array. This makes the
                 database larger but the solver faster.
             multiscale_step (float, optional): Determines the largest ratio between subsequent FOVs
