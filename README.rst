@@ -21,16 +21,16 @@ in the repository for full licensing details.
 Performance will vary, but in general solutions will take 10 milliseconds (excluding time to extract
 star positions from images) with 10 arcsecond (50 microradian) accuracy.
 
-A camera with a field of view of about 10 degrees and at least 512 by 512 pixels is a good starting point.
+A camera with a field of view (FOV) of about 10 degrees and at least 512 by 512 pixels is a good starting point.
 It is important that the distortion of the lens is low to preserve the true shape of the star
 patterns. Your camera should be able to acquire stars down to magnitude 7 for best results. (For
-a narrower field of view camera, you need to be able to capture dimmer stars.)
+a narrower FOV camera, you need to be able to capture dimmer stars.)
 
 A real-world set of images acquired with a FLIR Blackfly S BFS-U3-31S4M-C (Sony IMX265 sensor;
 binned 2x2) camera and a Fujifilm HF35XA-5M 35mm f/1.9 lens are included as test data (11.4 degrees
-field of view).
+FOV).
 
 To effectively use tetra3 with your camera you may need to build a database optimised for your use
 case. The Yale Bright Star Catalog, and the Hipparcos and Tyco Catalogues are supported for
-generating databases; see the API documentation. A database built for the test data is included
-as default_database.npz and may suit your needs if you have a similar camera setup.
+generating databases; see the API documentation. A database built for a FOV range of 10 to 20
+degrees and magnitude up to 8 is included as default_database.npz and may suit your needs.
