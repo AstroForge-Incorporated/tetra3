@@ -1114,10 +1114,12 @@ class Tetra3():
                     matched_stars = matched_stars[np.unique(matched_stars[:, 0], return_index=True)[1], :]
                     matched_stars = matched_stars[np.unique(matched_stars[:, 1], return_index=True)[1], :]                
 
-                    # Statistical reasoning for probability that current match is incorrect:
+                    # Summary of matches
                     num_extracted_stars = len(all_star_vectors)
                     num_nearby_catalog_stars = len(nearby_star_vectors)
                     num_star_matches = matched_stars.shape[0]
+                    self._logger.debug("Number of nearby stars: %d, total matched: %d" \
+                        % (num_nearby_catalog_stars, num_star_matches))
 
                     # Match array holds all the pairs of good matches
                     # [0, :, :] is Nx3 of centroid vectors (not rotated)
@@ -1126,16 +1128,15 @@ class Tetra3():
                     match_array[0, :, :] = all_star_vectors[matched_stars[:, 0], :]
                     match_array[1, :, :] = nearby_star_vectors[matched_stars[:, 1], :]
                     
-                    # Probability that a single star is a mismatch
-                    prob_single_star_mismatch = \
-                        1 - (1 - num_nearby_catalog_stars * match_radius**2)
-                    # Two matches can always be made using the degrees of freedom of the pattern
-                    prob_mismatch = scipy.stats.binom.cdf(num_extracted_stars
-                                                          - (num_star_matches - 2),
+                    # Probability that a single star is a mismatch (fraction of area that are stars)
+                    prob_single_star_mismatch = num_nearby_catalog_stars * match_radius**2
+                    # Probability that this rotation matrix's set of matches happen randomly
+                    # we subtract two degrees of fredom
+                    prob_mismatch = scipy.stats.binom.cdf(num_extracted_stars - (num_star_matches - 2),
                                                           num_extracted_stars,
                                                           1 - prob_single_star_mismatch)
-                    self._logger.debug("Possible match: Stars = %d, P_mismatch = %.2e, FOV = %.5fdeg" \
-                        % (num_star_matches, prob_mismatch, np.rad2deg(fov)))
+                    self._logger.debug("Mismatch probability = %.2e, at FOV = %.5fdeg" \
+                        % (prob_mismatch, np.rad2deg(fov)))
                     if prob_mismatch < match_threshold:
                         # Solved in this time
                         t_solve = (precision_timestamp() - t0_solve)*1000
@@ -1192,7 +1193,7 @@ class Tetra3():
         nearby = np.dot(np.asarray(vector), self.star_table[possible, 2:5].T) > np.cos(radius)
         return possible[nearby]
 
-def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsample=None,
+def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsample=None,
                              filtsize=25, bg_sub_mode='local_mean', sigma_mode='global_root_square',
                              binary_open=True, centroid_window=None, max_area=100, min_area=5,
                              max_sum=None, min_sum=None, max_axis_ratio=None, max_returned=None,
@@ -1261,7 +1262,7 @@ def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsampl
     Args:
         image (numpy.ndarray): Image to find centroids in.
         sigma (float, optional): The number of noise standard deviations to threshold at.
-            Default 3.
+            Default 2.
         image_th (float, optional): The value to threshold the image at. If supplied `sigma` and
             `simga_mode` will have no effect.
         crop (tuple, optional): Cropping to apply, see :meth:`tetra3.crop_and_downsample_image`.
