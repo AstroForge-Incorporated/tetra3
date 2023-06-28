@@ -435,8 +435,8 @@ class Tetra3():
                                 props_packed = props_packed)
 
     def generate_database(self, max_fov, min_fov=None, save_as=None,
-                          star_catalog='tyc_main', pattern_stars_per_fov=10,
-                          verification_stars_per_fov=30, star_max_magnitude=8,
+                          star_catalog='hip_main', pattern_stars_per_fov=10,
+                          verification_stars_per_fov=30, star_max_magnitude=7,
                           pattern_max_error=.005, simplify_pattern=False,
                           range_ra=None, range_dec=None,
                           presort_patterns=True, save_largest_edge=False,
@@ -471,9 +471,9 @@ class Tetra3():
                 # Create instance
                 t3 = tetra3.Tetra3()
                 # Generate and save database
-                t3.generate_database(max_fov=20, min_fov=10, star_max_magnitude=8, save_as='default_database')
+                t3.generate_database(max_fov=30, min_fov=10, star_max_magnitude=7, save_as='default_database')
 
-        and took 30 minutes to build. If you know your FOV, set max_fov to this value and leave min_fov as None.
+        and took 15 minutes to build. If you know your FOV, set max_fov to this value and leave min_fov as None.
 
         Args:
             max_fov (float): Maximum angle (in degrees) between stars in the same pattern.
