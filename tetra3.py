@@ -13,8 +13,14 @@ Included in the package:
     - :meth:`tetra3.get_centroids_from_image`: Extract spot centroids from an image.
     - :meth:`tetra3.crop_and_downsample_image`: Crop and/or downsample an image.
 
-A default database (named `default_database`) is included in the repo, it is built for a maximum
-field of view of 12 degrees and and the default settings.
+The class :class:`tetra3.Tetra3` has three main methods for solving images:
+
+    - :meth:`Tetra3.solve_from_image`: Solve the camera pointing direction of an image.
+    - :meth:`Tetra3.solve_from_centroids`: As above, but from a list of star centroids.
+    - :meth:`Tetra3.generate_database`: Create a new database for your application.
+
+A default database (named `default_database`) is included in the repo, it is built for a field of
+view range of 10 to 20 degrees with stars up to magntude 8.
 
 It is critical to set up the centroid extraction parameters (see :meth:`get_centroids_from_image`
 to reliably return star centroids from a given image. After this is done, pass the same keyword
@@ -94,6 +100,9 @@ from numpy.linalg import norm
 import scipy.ndimage
 import scipy.optimize
 import scipy.stats
+import scipy
+from scipy.spatial import KDTree
+from scipy.spatial.distance import pdist, cdist
 
 _MAGIC_RAND = 2654435761
 _supported_databases = ('bsc5', 'hip_main', 'tyc_main')
@@ -108,17 +117,16 @@ def _insert_at_index(item, index, table):
             table[i, :] = item
             return
 
-
-def _get_at_index(index, table):
-    """Gets from table with quadratic probing, returns list of all matches."""
+def _get_table_index_from_hash(hash_index, table):
+    """Gets from table with quadratic probing, returns list of all possibly matching indices."""
     max_ind = table.shape[0]
     found = []
     for c in itertools.count():
-        i = (index + c**2) % max_ind
+        i = (hash_index + c**2) % max_ind
         if all(table[i, :] == 0):
-            return found
+            return np.array(found)
         else:
-            found.append(table[i, :].squeeze())
+            found.append(i)
 
 
 def _key_to_index(key, bin_factor, max_index):
@@ -205,12 +213,13 @@ class Tetra3():
 
     Args:
         load_database (str or pathlib.Path, optional): Database to load. Will call
-            :meth:`load_database` with the provided argument after creating instance.
+            :meth:`load_database` with the provided argument after creating instance. Defaults to
+            'default_database'. Can set to None to create Tetra3 object without loaded database.
         debug_folder (pathlib.Path, optional): The folder for debug logging. If None (the default)
             the folder tetra3/debug will be used/created.
 
     """
-    def __init__(self, load_database=None, debug_folder=None):
+    def __init__(self, load_database='default_database', debug_folder=None):
         # Logger setup
         self._debug_folder = None
         if debug_folder is None:
@@ -237,11 +246,15 @@ class Tetra3():
         self._logger.debug('Tetra3 Constructor called with load_database=' + str(load_database))
         self._star_table = None
         self._pattern_catalog = None
+        self._pattern_largest_edge = None
         self._verification_catalog = None
         self._db_props = {'pattern_mode': None, 'pattern_size': None, 'pattern_bins': None,
-                          'pattern_max_error': None, 'max_fov': None,
-                          'pattern_stars_per_fov': None, 'verification_stars_per_fov': None,
-                          'star_max_magnitude': None, 'star_min_separation': None}
+                          'pattern_max_error': None, 'max_fov': None, 'min_fov': None,
+                          'star_catalog': None, 'pattern_stars_per_fov': None,
+                          'verification_stars_per_fov': None, 'star_max_magnitude': None,
+                          'simplify_pattern': None, 'range_ra': None, 'range_dec': None,
+                          'presort_patterns': None}
+
         if load_database is not None:
             self._logger.debug('Trying to load database')
             self.load_database(load_database)
@@ -287,6 +300,11 @@ class Tetra3():
         return self._pattern_catalog
 
     @property
+    def pattern_largest_edge(self):
+        """numpy.ndarray: Catalog of largest edges for each pattern in milliradian."""
+        return self._pattern_largest_edge
+
+    @property
     def database_properties(self):
         """dict: Dictionary of database properties.
 
@@ -300,8 +318,6 @@ class Tetra3():
               'max_fov'.
             - 'verification_stars_per_fov': Number of stars in catalog in each region of size 'max_fov'.
             - 'star_max_magnitude': Dimmest apparent magnitude of stars in database.
-            - 'star_min_separation': Smallest separation allowed between stars (to remove doubles;
-              degrees).
         """
         return self._db_props
 
@@ -327,6 +343,12 @@ class Tetra3():
             self._pattern_catalog = data['pattern_catalog']
             self._star_table = data['star_table']
             props_packed = data['props_packed']
+            try:
+                self._pattern_largest_edge = data['pattern_largest_edge']
+            except KeyError:
+                self._logger.debug('Database does not have largest edge stored, set to None.')
+                self._pattern_largest_edge = None
+
         self._logger.debug('Unpacking properties')
         for key in self._db_props.keys():
             try:
@@ -341,8 +363,15 @@ class Tetra3():
                     self._db_props[key] = props_packed['star_min_magnitude'][()]
                     self._logger.debug('Unpacked star_min_magnitude to: ' \
                         + str(self._db_props[key]))
+                elif key == 'presort_patterns':
+                    self._db_props[key] = False
+                    self._logger.debug('No presort_patterns key, set to False')
                 else:
-                    raise
+                    self._db_props[key] = None
+                    self._logger.warning('Missing key in database (likely version difference): ' + str(key))
+        if self._db_props['min_fov'] is None:
+            self._logger.debug('No min_fov key, copy from max_fov')
+            self._db_props['min_fov'] = self._db_props['max_fov']
 
     def save_database(self, path):
         """Save database to file.
@@ -362,38 +391,68 @@ class Tetra3():
             path = Path(path).with_suffix('.npz')
             
         self._logger.info('Saving database to: ' + str(path))
+
         # Pack properties as numpy structured array
         props_packed = np.array((self._db_props['pattern_mode'],
                                  self._db_props['pattern_size'],
                                  self._db_props['pattern_bins'],
                                  self._db_props['pattern_max_error'],
                                  self._db_props['max_fov'],
+                                 self._db_props['min_fov'],
+                                 self._db_props['star_catalog'],
                                  self._db_props['pattern_stars_per_fov'],
                                  self._db_props['verification_stars_per_fov'],
                                  self._db_props['star_max_magnitude'],
-                                 self._db_props['star_min_separation']),
+                                 self._db_props['simplify_pattern'],
+                                 self._db_props['range_ra'],
+                                 self._db_props['range_dec'],
+                                 self._db_props['presort_patterns']),
                                 dtype=[('pattern_mode', 'U64'),
                                        ('pattern_size', np.uint16),
                                        ('pattern_bins', np.uint16),
                                        ('pattern_max_error', np.float32),
                                        ('max_fov', np.float32),
+                                       ('min_fov', np.float32),
+                                       ('star_catalog', 'U64'),
                                        ('pattern_stars_per_fov', np.uint16),
                                        ('verification_stars_per_fov', np.uint16),
                                        ('star_max_magnitude', np.float32),
-                                       ('star_min_separation', np.float32)])
+                                       ('simplify_pattern', bool),
+                                       ('range_ra', np.float32, (2,)),
+                                       ('range_dec', np.float32, (2,)),
+                                       ('presort_patterns', bool)])
+
         self._logger.debug('Packed properties into: ' + str(props_packed))
         self._logger.debug('Saving as compressed numpy archive')
-        np.savez_compressed(path, star_table=self.star_table,
-                            pattern_catalog=self.pattern_catalog, props_packed=props_packed)
+        if self.pattern_largest_edge is not None:
+            np.savez_compressed(path, star_table = self.star_table,
+                                pattern_catalog = self.pattern_catalog,
+                                pattern_largest_edge = self.pattern_largest_edge,
+                                props_packed = props_packed)
+        else:
+            np.savez_compressed(path, star_table = self.star_table,
+                                pattern_catalog = self.pattern_catalog,
+                                props_packed = props_packed)
 
-    def generate_database(self, max_fov, save_as=None, star_catalog='bsc5', pattern_stars_per_fov=10,
-                          verification_stars_per_fov=20, star_max_magnitude=7,
-                          star_min_separation=.05, pattern_max_error=.005):
-        """Create a database and optionally save to file. Typically takes 5 to 30 minutes.
+    def generate_database(self, max_fov, min_fov=None, save_as=None,
+                          star_catalog='hip_main', pattern_stars_per_fov=10,
+                          verification_stars_per_fov=30, star_max_magnitude=7,
+                          pattern_max_error=.005, simplify_pattern=False,
+                          range_ra=None, range_dec=None,
+                          presort_patterns=True, save_largest_edge=False,
+                          multiscale_step=1.5):
+        """Create a database and optionally save it to file.
+        
+        Takes a few minutes for a small (large FOV) database, can take many hours for a large (small FOV) database.
+        The primary knowledge necessary is the FOV you want the database to work for and the highest magnitude of
+        stars you want to include. For a single application, set
+        max_fov equal to your known FOV. Alternatively, set max_fov and min_fov to the range of FOVs you want the 
+        database to be built for. For large difference in max_fov and min_fov, a multiscale database will be built
+        where patterns of several different sizes on the sky will be included.
 
         Note:
-            If you wish to build you own database (typically for a different field-of-view) you must
-            download a star catalogue. tetra3 supports three options:
+            If you wish to build you own database you must download a star catalogue. tetra3 supports three options,
+            where the 'tyc_main' is the default and recommended database to use:
             
             * The 285KB Yale Bright Star Catalog 'BSC5' containing 9,110 stars. This is complete to
               to about magnitude seven and is sufficient for >10 deg field-of-view setups.
@@ -406,46 +465,71 @@ class Tetra3():
             <https://cdsarc.u-strasbg.fr/ftp/cats/I/239/> (save the appropriate .dat file). The
             downloaded catalogue must be placed in the tetra3 directory.
 
-        Args:
-            max_fov (float): Maximum angle (in degrees) between stars in the same pattern.
-            save_as (str or pathlib.Path, optional): Save catalog here when finished. Calls
-                :meth:`save_database`.
-            star_catalog (string, optional): Abbreviated name of star catalog, one of 'bsc5',
-                'hip_main', or 'tyc_main'.
-            pattern_stars_per_fov (int, optional): Number of stars used for pattern matching in each
-                region of size 'max_fov'.
-            verification_stars_per_fov (int, optional): Number of stars used for verification of the
-                solution in each region of size 'max_fov'.
-            star_max_magnitude (float, optional): Dimmest apparent magnitude of stars in database.
-            star_min_separation (float, optional): Smallest separation (in degrees) allowed between
-                stars (to remove doubles).
-            pattern_max_error (float, optional): Maximum difference allowed in pattern for a match.
-
-        Example:
+        Example, the default database was generated with:
             ::
 
                 # Create instance
                 t3 = tetra3.Tetra3()
                 # Generate and save database
-                t3.generate_database(max_fov=20, save_as='my_database_name')
+                t3.generate_database(max_fov=30, min_fov=10, star_max_magnitude=7, save_as='default_database')
 
+        and took 15 minutes to build. If you know your FOV, set max_fov to this value and leave min_fov as None.
 
+        Args:
+            max_fov (float): Maximum angle (in degrees) between stars in the same pattern.
+            min_fov (float, optional): Minimum FOV considered when the catalogue density is trimmed to size.
+                If None (the default), min_fov will be set to max_fov, i.e. a catalogue for a single
+                application is generated (this is most efficient size and speed wise).
+            save_as (str or pathlib.Path, optional): Save catalogue here when finished. Calls
+                :meth:`save_database`.
+            star_catalog (string, optional): Abbreviated name of star catalog, one of 'bsc5',
+                'hip_main', or 'tyc_main'. Default 'bsc5'.
+            pattern_stars_per_fov (int, optional): Number of stars used for pattern matching in each
+                region of size 'max_fov'. Default 10.
+            verification_stars_per_fov (int, optional): Number of stars used for verification of the
+                solution in each region of size 'max_fov'. Default 30.
+            star_max_magnitude (float, optional): Dimmest apparent magnitude of stars in database.
+                Default 7.
+            pattern_max_error (float, optional): Maximum difference allowed in pattern for a match.
+                Default .005.
+            simplify_pattern (bool, optional): If set to True, the patterns generated have maximum
+                size of FOV/2 from the centre star, and will be generated much faster. If set to 
+                False (the default) the maximum separation of all stars in the pattern is FOV.
+            range_ra (tuple, optional): Tuple with the range (min_ra, max_ra) in degrees (0 to 360).
+                If set, only stars within the given right ascension will be kept in the database.
+            range_dec (tuple, optional): Tuple with the range (min_dec, max_dec) in degrees (-90 to 90).
+                If set, only stars within the give declination will be kept in the database.
+            presort_patterns (bool, optional): If True (the default), all star patterns will be
+                sorted during database generation to avoid doing it when solving. Makes database
+                generation slower but the solver faster.
+            save_largest_edge (bool, optional): If True (default False), the absolute size of each
+                pattern is stored (via its largest edge angle) in a separate array. This makes the
+                database larger but the solver faster.
+            multiscale_step (float, optional): Determines the largest ratio between subsequent FOVs
+                that is allowed when generating a multiscale database. Defaults to 1.5. If the ratio
+                max_fov/min_fov is less than sqrt(multiscale_step) a single scale database is built.
         """
         self._logger.debug('Got generate pattern catalogue with input: '
-                           + str((max_fov, save_as, star_catalog, pattern_stars_per_fov,
+                           + str((max_fov, min_fov, save_as, star_catalog, pattern_stars_per_fov,
                                   verification_stars_per_fov, star_max_magnitude,
-                                  star_min_separation, pattern_max_error)))
+                                  pattern_max_error, simplify_pattern,
+                                  range_ra, range_dec)))
 
         assert star_catalog in _supported_databases, 'Star catalogue name must be one of: ' \
              + str(_supported_databases)
         max_fov = np.deg2rad(float(max_fov))
+        if min_fov is None:
+            min_fov = max_fov
+        else:
+            min_fov = np.deg2rad(float(min_fov))
         pattern_stars_per_fov = int(pattern_stars_per_fov)
         verification_stars_per_fov = int(verification_stars_per_fov)
         star_max_magnitude = float(star_max_magnitude)
-        star_min_separation = float(star_min_separation)
         pattern_size = 4
-        pattern_bins = 25
+        pattern_bins = round(1/4/pattern_max_error)
         current_year = datetime.utcnow().year
+        presort_patterns = bool(presort_patterns)
+        save_largest_edge = bool(save_largest_edge)
         
         catalog_file_full_pathname = Path(__file__).parent / star_catalog
         # Add .dat suffix for hip and tyc if not present
@@ -453,7 +537,7 @@ class Tetra3():
             catalog_file_full_pathname = catalog_file_full_pathname.with_suffix('.dat')
         
         assert catalog_file_full_pathname.exists(), 'No star catalogue found at ' +str(     catalog_file_full_pathname)   
-         
+        
         # Calculate number of star catalog entries:
         if star_catalog == 'bsc5':
             header_length = 28
@@ -511,138 +595,221 @@ class Tetra3():
         self._logger.info('Loaded ' + str(num_entries) + ' stars with magnitude below ' \
             + str(star_max_magnitude) + '.')
 
+        # If desired, clip out only a specific range of ra and/or dec for a partial coverage database
+        if range_ra is not None:
+            range_ra = np.deg2rad(range_ra)
+            if range_ra[0] < range_ra[1]: # Range does not cross 360deg discontinuity
+                kept = np.logical_and(star_table[:, 0] > range_ra[0], star_table[:, 0] < range_ra[1])
+            else:
+                kept = np.logical_or(star_table[:, 0] > range_ra[0], star_table[:, 0] < range_ra[1])
+            star_table = star_table[kept, :]
+            num_entries = star_table.shape[0]
+            self._logger.info('Limited to RA range ' + str(np.rad2deg(range_ra)) + ', keeping ' \
+                + str(num_entries) + ' stars.')
+        if range_dec is not None:
+            range_dec = np.deg2rad(range_dec)
+            if range_dec[0] < range_dec[1]: # Range does not cross +/-90deg discontinuity
+                kept = np.logical_and(star_table[:, 1] > range_dec[0], star_table[:, 1] < range_dec[1])
+            else:
+                kept = np.logical_or(star_table[:, 1] > range_dec[0], star_table[:, 1] < range_dec[1])
+            star_table = star_table[kept, :]
+            num_entries = star_table.shape[0]
+            self._logger.info('Limited to DEC range ' + str(np.rad2deg(range_dec)) + ', keeping ' \
+                + str(num_entries) + ' stars.')
+
         # Calculate star direction vectors:
         for i in range(0, num_entries):
             vector = np.array([np.cos(star_table[i,0])*np.cos(star_table[i,1]),
                                np.sin(star_table[i,0])*np.cos(star_table[i,1]),
                                np.sin(star_table[i,1])])
             star_table[i,2:5] = vector
-                
-        # Filter for maximum number of stars in FOV and doubles
-        keep_for_patterns = [False] * star_table.shape[0]
-        keep_for_verifying = [False] * star_table.shape[0]
-        all_star_vectors = star_table[:, 2:5].transpose()
+        # Insert all stars in a KD-tree for fast neighbour lookup
+        self._logger.info('Trimming database to requested star density.')
+        all_star_vectors = star_table[:, 2:5]
+        vector_kd_tree = KDTree(all_star_vectors)
+
+        # Bool list of stars, indicating it will be used in the database
+        keep_for_patterns = np.full(num_entries, False)
         # Keep the first one and skip index 0 in loop
         keep_for_patterns[0] = True
-        keep_for_verifying[0] = True
-        for star_ind in range(1, star_table.shape[0]):
-            vector = star_table[star_ind, 2:5]
-            # Angle to all stars we have kept
-            angs_patterns = np.dot(vector, all_star_vectors[:, keep_for_patterns])
-            angs_verifying = np.dot(vector, all_star_vectors[:, keep_for_verifying])
-            # Check double star limit as well as stars-per-fov limit
-            if star_min_separation is None \
-                    or all(angs_patterns < np.cos(np.deg2rad(star_min_separation))):
-                num_stars_in_fov = sum(angs_patterns > np.cos(max_fov/2))
-                if num_stars_in_fov < pattern_stars_per_fov:
-                    # Only keep if not too many close by already
-                    keep_for_patterns[star_ind] = True
-                    keep_for_verifying[star_ind] = True
-            # Secondary stars-per-fov check, if we fail this we will not keep the star at all
-            if star_min_separation is None \
-                    or all(angs_verifying < np.cos(np.deg2rad(star_min_separation))):
-                num_stars_in_fov = sum(angs_verifying > np.cos(max_fov/2))
-                if num_stars_in_fov < verification_stars_per_fov:
-                    # Only keep if not too many close by already
-                    keep_for_verifying[star_ind] = True
-        # Trim down star table and update indexing for pattern stars
-        star_table = star_table[keep_for_verifying, :]
-        pattern_stars = (np.cumsum(keep_for_verifying)-1)[keep_for_patterns]
 
-        self._logger.info('For pattern matching with at most ' + str(pattern_stars_per_fov)
-                          + ' stars per FOV and no doubles: ' + str(len(pattern_stars)) + '.')
-        self._logger.info('For verification with at most ' + str(verification_stars_per_fov)
-                          + ' stars per FOV and no doubles: ' + str(star_table.shape[0]) + '.')
+        # Calculate set of FOV scales to create patterns at
+        fov_ratio = max_fov/min_fov
+        def logk(x, k):
+            return np.log(x) / np.log(k)
+        fov_divisions = np.ceil(logk(fov_ratio, multiscale_step)).astype(int) + 1
+        if fov_ratio < np.sqrt(multiscale_step):
+            pattern_fovs = [max_fov]
+        else:
+            pattern_fovs = np.exp2(np.linspace(np.log2(min_fov), np.log2(max_fov), fov_divisions))
+        self._logger.info('Generating patterns at FOV scales: ' + str(np.rad2deg(pattern_fovs)))
 
-        self._logger.debug('Building temporary hash table for finding pattern neighbours')
-        temp_coarse_sky_map = {}
-        temp_bins = 4
-        # insert the stars into the hash table
-        for star_id in pattern_stars:
-            vector = star_table[star_id, 2:5]
-            # find which partition the star occupies in the hash table
-            hash_code = tuple(((vector+1)*temp_bins).astype(int))
-            # if the partition is empty, create a new list to hold the star
-            # if the partition already contains stars, add the star to the list
-            temp_coarse_sky_map[hash_code] = temp_coarse_sky_map.pop(hash_code, []) + [star_id]
-
-        def temp_get_nearby_stars(vector, radius):
-            """Get nearby from temporary hash table."""
-            # create list of nearby stars
-            nearby_star_ids = []
-            # given error of at most radius in each dimension, compute the space of hash codes
-            hash_code_space = [range(max(low, 0), min(high+1, 2*temp_bins)) for (low, high)
-                               in zip(((vector + 1 - radius) * temp_bins).astype(int),
-                                      ((vector + 1 + radius) * temp_bins).astype(int))]
-            # iterate over hash code space
-            for hash_code in itertools.product(*hash_code_space):
-                # iterate over the stars in the given partition, adding them to
-                # the nearby stars list if they're within range of the vector
-                for star_id in temp_coarse_sky_map.get(hash_code, []):
-                    if np.dot(vector, star_table[star_id, 2:5]) > np.cos(radius):
-                        nearby_star_ids.append(star_id)
-            return nearby_star_ids
-
-        # generate pattern catalog
-        self._logger.info('Generating all possible patterns.')
-        pattern_list = []
+        # List of patterns found, to be populated in loop
+        pattern_list = set([])
         # initialize pattern, which will contain pattern_size star ids
         pattern = [None] * pattern_size
-        for pattern[0] in pattern_stars:  # star_ids_filtered:
-            vector = star_table[pattern[0], 2:5]
-            # find which partition the star occupies in the sky hash table
-            hash_code = tuple(((vector+1)*temp_bins).astype(int))
-            # remove the star from the sky hash table
-            temp_coarse_sky_map[hash_code].remove(pattern[0])
-            # iterate over all possible patterns containing the removed star
-            for pattern[1:] in itertools.combinations(temp_get_nearby_stars(vector, max_fov),
-                                                      pattern_size-1):
-                # retrieve the vectors of the stars in the pattern
-                vectors = star_table[pattern, 2:5]
-                # verify that the pattern fits within the maximum field-of-view
-                # by checking the distances between every pair of stars in the pattern
-                if all(np.dot(*star_pair) > np.cos(max_fov)
-                        for star_pair in itertools.combinations(vectors, 2)):
-                    pattern_list.append(pattern.copy())
+        for pattern_fov in reversed(pattern_fovs):
+            keep_at_fov = np.full(num_entries, False)
+            if fov_divisions == 1:
+                # Single scale database, trim to min_fov, make patterns up to max_fov
+                pattern_stars_separation = .6 * min_fov / np.sqrt(pattern_stars_per_fov)
+            else:
+                # Multiscale database, trim and make patterns iteratively at smaller FOVs
+                pattern_stars_separation = .6 * pattern_fov / np.sqrt(pattern_stars_per_fov)
 
-        self._logger.info('Found ' + str(len(pattern_list)) + ' patterns. Building catalogue.')
+            self._logger.info('At FOV ' + str(round(np.rad2deg(pattern_fov), 5)) + ' separate stars by ' \
+                + str(np.rad2deg(pattern_stars_separation)) + 'deg.')
+            # Loop through all stars in database, create set of of pattern stars
+            # Note that each loop just adds stars to the previous version (between old ones)
+            # so we can skip all indices already kept
+            for star_ind in range(num_entries):
+                vector = all_star_vectors[star_ind, :]
+                # Check if any kept stars are within the pattern checking separation
+                within_pattern_separation = vector_kd_tree.query_ball_point(vector,
+                    pattern_stars_separation)
+                occupied_for_pattern = np.any(keep_at_fov[within_pattern_separation])
+                # If there isn't a star to close, add this to the table and carry on
+                # Add to both this FOV specifically and the general table.
+                if not occupied_for_pattern:
+                    keep_for_patterns[star_ind] = True
+                    keep_at_fov[star_ind] = True
+            
+            self._logger.info('Stars for patterns at this FOV: ' + str(np.sum(keep_at_fov)) + '.')
+            self._logger.info('Stars for patterns total: ' + str(np.sum(keep_for_patterns)) + '.')
+            # Clip out table of the kept stars
+            pattern_star_table = star_table[keep_at_fov, :]
+            # Insert into KD tree for neighbour lookup
+            pattern_kd_tree = KDTree(pattern_star_table[:, 2:5])
+            # List of stars available (not yet used to create patterns)
+            available_stars = [True] * pattern_star_table.shape[0]
+            # Index conversion from pattern_star_table to main star_table
+            pattern_index = np.nonzero(keep_at_fov)[0].tolist()
+
+            # Loop throgh all pattern stars
+            for pattern[0] in range(pattern_star_table.shape[0]):
+                # Remove star from future consideration
+                available_stars[pattern[0]] = False
+                # Find all neighbours within FOV, keep only those not removed
+                vector = pattern_star_table[pattern[0], 2:5]
+                if simplify_pattern:
+                    neighbours = pattern_kd_tree.query_ball_point(vector, pattern_fov/2)
+                else:
+                    neighbours = pattern_kd_tree.query_ball_point(vector, pattern_fov)
+                available = [available_stars[i] for i in neighbours]
+                neighbours = np.compress(available, neighbours)
+                # Check all possible patterns
+                for pattern[1:] in itertools.combinations(neighbours, pattern_size - 1):
+                    if simplify_pattern:
+                        # Add to database
+                        pattern_list.add(tuple(pattern_index[i] for i in pattern))
+                        if len(pattern_list) % 1000000 == 0:
+                            self._logger.info('Generated ' + str(len(pattern_list)) + ' patterns so far.')
+                    else:
+                        # Unpack and measure angle between all vectors
+                        vectors = pattern_star_table[pattern, 2:5]
+                        dots = np.dot(vectors, vectors.T)
+                        if dots.min() > np.cos(pattern_fov):
+                            # Maximum angle is within the FOV limit, append with original index
+                            pattern_list.add(tuple(pattern_index[i] for i in pattern))
+                            if len(pattern_list) % 1000000 == 0:
+                                self._logger.info('Generated ' + str(len(pattern_list)) + ' patterns so far.')
+        self._logger.info('Found ' + str(len(pattern_list)) + ' patterns in total.')
+
+        # Repeat process, add in missing stars for verification task
+        verification_stars_separation = .6 * min_fov / np.sqrt(verification_stars_per_fov)
+        keep_for_verifying = keep_for_patterns.copy()
+        for star_ind in range(1, num_entries):
+            vector = all_star_vectors[star_ind, :]
+            # Check if any kept stars are within the pattern checking separation
+            within_verification_separation = vector_kd_tree.query_ball_point(vector,
+                verification_stars_separation)
+            occupied_for_verification = np.any(keep_for_verifying[within_verification_separation])
+            if not occupied_for_verification:
+                keep_for_verifying[star_ind] = True
+        self._logger.info('Total stars for verification: ' + str(np.sum(keep_for_verifying)) + '.')
+
+        # Trim down star table and update indexing for pattern stars
+        star_table = star_table[keep_for_verifying, :]
+        pattern_index = (np.cumsum(keep_for_verifying)-1)
+        pattern_list = pattern_index[np.array(list(pattern_list))].tolist()
+
+        # Create all pattens by calculating and sorting edge ratios and inserting into hash table
+        self._logger.info('Start building catalogue.')
         catalog_length = 2 * len(pattern_list)
-        pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint16)
-        for pattern in pattern_list:
+        # Determine type to make sure the biggest index will fit, create pattern catalogue
+        max_index = np.max(np.array(pattern_list))
+        if max_index <= np.iinfo('uint8').max:
+            pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint8)
+        elif max_index <= np.iinfo('uint16').max:
+            pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint16)
+        else:
+            pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint32)
+        self._logger.info('Catalog size ' + str(pattern_catalog.shape) + ' and type ' + str(pattern_catalog.dtype) + '.')
+        
+        if save_largest_edge:
+            pattern_largest_edge = np.zeros(catalog_length, dtype=np.float16)
+            self._logger.info('Storing larges edges as type ' + str(pattern_largest_edge.dtype))
+
+        # Indices to extract from dot product matrix (above diagonal)
+        upper_tri_index = np.triu_indices(pattern_size, 1)
+        
+        # Go through each pattern and insert to the catalogue
+        for (index, pattern) in enumerate(pattern_list):
+            if index % 1000000 == 0 and index > 0:
+                self._logger.info('Inserting pattern number: ' + str(index))
+            
             # retrieve the vectors of the stars in the pattern
             vectors = star_table[pattern, 2:5]
-            # calculate and sort the edges of the star pattern
-            edges = np.sort([np.sqrt((np.subtract(*star_pair)**2).sum())
-                             for star_pair in itertools.combinations(vectors, 2)])
-            # extract the largest edge
-            largest_edge = edges[-1]
-            # divide the edges by the largest edge to create dimensionless ratios
-            edge_ratios = edges[:-1] / largest_edge
+            
+            # implement more accurate angle calculation
+            edge_angles_sorted = np.sort(2 * np.arcsin(.5 * pdist(vectors)))
+            edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
+
             # convert edge ratio float to hash code by binning
             hash_code = tuple((edge_ratios * pattern_bins).astype(int))
-            hash_index = _key_to_index(hash_code, pattern_bins, pattern_catalog.shape[0])
+            hash_index = _key_to_index(hash_code, pattern_bins, catalog_length)
+
+            if presort_patterns:
+                # find the centroid, or average position, of the star pattern
+                pattern_centroid = np.mean(vectors, axis=0)
+                # calculate each star's radius, or Euclidean distance from the centroid
+                pattern_radii = cdist(vectors, pattern_centroid[None, :]).flatten()
+                # use the radii to uniquely order the pattern, used for future matching
+                pattern = np.array(pattern)[np.argsort(pattern_radii)]
+            
             # use quadratic probing to find an open space in the pattern catalog to insert
-            for index in ((hash_index + offset ** 2) % pattern_catalog.shape[0]
+            for index in ((hash_index + offset ** 2) % catalog_length
                           for offset in itertools.count()):
                 # if the current slot is empty, add the pattern
                 if not pattern_catalog[index][0]:
                     pattern_catalog[index] = pattern
+                    if save_largest_edge:
+                        # Store as milliradian to better use float16 range
+                        pattern_largest_edge[index] = edge_angles_sorted[-1]*1000
                     break
+        
         self._logger.info('Finished generating database.')
         self._logger.info('Size of uncompressed star table: %i Bytes.' %star_table.nbytes)
         self._logger.info('Size of uncompressed pattern catalog: %i Bytes.' %pattern_catalog.nbytes)
 
         self._star_table = star_table
         self._pattern_catalog = pattern_catalog
+        if save_largest_edge:
+            self._pattern_largest_edge = pattern_largest_edge
         self._db_props['pattern_mode'] = 'edge_ratio'
         self._db_props['pattern_size'] = pattern_size
         self._db_props['pattern_bins'] = pattern_bins
         self._db_props['pattern_max_error'] = pattern_max_error
         self._db_props['max_fov'] = np.rad2deg(max_fov)
+        self._db_props['min_fov'] = np.rad2deg(min_fov)
+        self._db_props['star_catalog'] = star_catalog
         self._db_props['pattern_stars_per_fov'] = pattern_stars_per_fov
         self._db_props['verification_stars_per_fov'] = verification_stars_per_fov
         self._db_props['star_max_magnitude'] = star_max_magnitude
-        self._db_props['star_min_separation'] = star_min_separation
+        self._db_props['simplify_pattern'] = simplify_pattern
+        self._db_props['range_ra'] = range_ra
+        self._db_props['range_dec'] = range_dec
+        self._db_props['presort_patterns'] = presort_patterns
         self._logger.debug(self._db_props)
 
         if save_as is not None:
@@ -652,13 +819,13 @@ class Tetra3():
             self._logger.info('Skipping database file generation.')
 
     def solve_from_image(self, image, fov_estimate=None, fov_max_error=None,
-                         pattern_checking_stars=6, match_radius=.01, match_threshold=1e-9,
+                         pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3,
                          **kwargs):
         """Solve for the sky location of an image.
 
         Star locations (centroids) are found using :meth:`tetra3.get_centroids_from_image` and
         keyword arguments are passed along to this method. Every combination of the
-        `pattern_checking_stars` (default 6) brightest stars found is checked against the database
+        `pattern_checking_stars` (default 8) brightest stars found is checked against the database
         before giving up.
 
         Example:
@@ -678,8 +845,8 @@ class Tetra3():
                 patterns to look up in database.
             match_radius (float, optional): Maximum distance to a star to be considered a match
                 as a fraction of the image field of view.
-            match_threshold (float, optional): Maximum allowed mismatch probability to consider
-                a tested pattern a valid match.
+            match_threshold (float, optional): Maximum allowed false-positive probability to accept
+                a tested pattern a valid match. Default 1e-3. NEW: Corrected for the database size.
             **kwargs (optional): Other keyword arguments passed to
                 :meth:`tetra3.get_centroids_from_image`.
 
@@ -691,7 +858,7 @@ class Tetra3():
                 - 'FOV': Calculated field of view of the provided image.
                 - 'RMSE': RMS residual of matched stars in arcseconds.
                 - 'Matches': Number of stars in the image matched to the database.
-                - 'Prob': Probability that the solution is a mismatch.
+                - 'Prob': Probability that the solution is a false-positive.
                 - 'T_solve': Time spent searching for a match in milliseconds.
                 - 'T_extract': Time spent exctracting star centroids in milliseconds.
 
@@ -699,142 +866,229 @@ class Tetra3():
                 dictionary except 'T_solve' and 'T_exctract'.
         """
         assert self.has_database, 'No database loaded'
-        image = np.asarray(image)
+        self._logger.debug('Got solve from image with input: ' + str((image, fov_estimate,
+            fov_max_error, pattern_checking_stars, match_radius, match_threshold, kwargs)))
+        image = np.asarray(image, dtype=np.float32)
+        (height, width) = image.shape[:2]
+        self._logger.debug('Image (height, width): ' + str((height, width)))
+
+        # Run star extraction, passing kwargs along
+        t0_extract = precision_timestamp()
+        centroids = get_centroids_from_image(image, **kwargs)
+        t_extract = (precision_timestamp() - t0_extract)*1000
+        self._logger.debug('Found this many centroids, in time: ' + str((len(centroids), t_extract)))
+        # Run centroid solver, passing arguments along (could clean up with kwargs handler)
+        solution = self.solve_from_centroids(centroids, (height, width), 
+            fov_estimate=fov_estimate, fov_max_error=fov_max_error,
+            pattern_checking_stars=pattern_checking_stars, match_radius=match_radius,
+            match_threshold=match_threshold)
+        # Add extraction time to results and return
+        solution['T_extract'] = t_extract
+        return solution
+
+    def solve_from_centroids(self, star_centroids, size, fov_estimate=None, fov_max_error=None,
+                             pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3):
+        """Solve for the sky location using a list of centroids.
+
+        Use :meth:`tetra3.get_centroids_from_image` or your own centroiding algorithm to find an
+        array of all the stars in your image and pass this result along with the resolution of the
+        image to this method. Every combination of the `pattern_checking_stars` (default 8)
+        brightest stars found is checked against the database before giving up. Since patterns
+        contain four stars, there will be 8 choose 4 (70) patterns tested against the database
+        by default.
+
+        Passing an estimated FOV and error bounds yields solutions much faster that letting tetra3
+        figure it out.
+
+        Example:
+            ::
+
+                # Get centroids from image with custom parameters
+                centroids = get_centroids_from_image(image, simga=2, filtsize=30)
+                # Solve from centroids
+                result = t3.solve_from_centroids(centroids, size=image.size, fov_estimate=13)
+
+        Args:
+            star_centroids (numpy.ndarray): (N,2) list of centroids, ordered by brightest first.
+                Each row is the (y, x) position of the star measured from the top left corner.
+            size (tuple of floats): (width, height) of the centroid coordinate system (i.e. 
+                image resolution).
+            fov_estimate (float, optional): Estimated field of view of the image in degrees. Default
+                None.
+            fov_max_error (float, optional): Maximum difference in field of view from the estimate
+                allowed for a match in degrees. Default None.
+            pattern_checking_stars (int, optional): Number of stars used to create possible
+                patterns to look up in database. Default 8.
+            match_radius (float, optional): Maximum distance to a star to be considered a match
+                as a fraction of the image field of view. Default 0.01.
+            match_threshold (float, optional): Maximum allowed false-positive probability to accept
+                a tested pattern a valid match. Default 1e-3. NEW: Corrected for the database size.
+
+        Returns:
+            dict: A dictionary with the following keys is returned:
+                - 'RA': Right ascension of centre of image in degrees.
+                - 'Dec': Declination of centre of image in degrees.
+                - 'Roll': Rotation of image relative to north celestial pole.
+                - 'FOV': Calculated field of view of the provided image.
+                - 'RMSE': RMS residual of matched stars in arcseconds.
+                - 'Matches': Number of stars in the image matched to the database.
+                - 'Prob': Probability that the solution is a false-positive.
+                - 'T_solve': Time spent searching for a match in milliseconds.
+
+                If unsuccsessful in finding a match,  None is returned for all keys of the
+                dictionary except 'T_solve'.
+        """
+        assert self.has_database, 'No database loaded'
+        self._logger.debug('Got solve from centroids with input: '
+                           + str((len(star_centroids), size, fov_estimate, fov_max_error,
+                                  pattern_checking_stars, match_radius, match_threshold)))
+
+        star_centroids = np.asarray(star_centroids)
         if fov_estimate is None:
-            fov_estimate = np.deg2rad(self._db_props['max_fov'])
+            # If no FOV given at all, guess middle of the range for a start
+            fov_initial = np.deg2rad((self._db_props['max_fov'] + self._db_props['min_fov'])/2)
         else:
             fov_estimate = np.deg2rad(float(fov_estimate))
+            fov_initial = fov_estimate
         if fov_max_error is not None:
             fov_max_error = np.deg2rad(float(fov_max_error))
         match_radius = float(match_radius)
-        match_threshold = float(match_threshold)
+        num_patterns = self.pattern_catalog.shape[0] // 2
+        match_threshold = float(match_threshold) / num_patterns
+        self._logger.debug('Set threshold to: ' + str(match_threshold) + ', have '
+            + str(num_patterns) + ' patterns.')
         pattern_checking_stars = int(pattern_checking_stars)
 
         # extract height (y) and width (x) of image
-        height, width = image.shape[0:2]
+        (height, width) = size[:2]
         # Extract relevant database properties
         num_stars = self._db_props['verification_stars_per_fov']
         p_size = self._db_props['pattern_size']
         p_bins = self._db_props['pattern_bins']
         p_max_err = self._db_props['pattern_max_error']
-        # Run star extraction, passing kwargs along
-        t0_extract = precision_timestamp()
-        star_centroids = get_centroids_from_image(image, max_returned=num_stars, **kwargs)
-        t_extract = (precision_timestamp() - t0_extract)*1000
+        presorted = self._db_props['presort_patterns']
+        upper_tri_index = np.triu_indices(p_size, 1)
+
+        star_centroids = star_centroids[:num_stars, :]
+        self._logger.debug('Trimmed centroid_input shape to: ' + str(star_centroids.shape))
 
         def compute_vectors(star_centroids, fov):
             """Get unit vectors from star centroids (pinhole camera)."""
             # compute list of (i,j,k) vectors given list of (y,x) star centroids and
             # an estimate of the image's field-of-view in the x dimension
             # by applying the pinhole camera equations
-            center_x = width / 2.
-            center_y = height / 2.
-            scale_factor = np.tan(fov / 2) / center_x
-            star_vectors = []
-            for (star_y, star_x) in star_centroids:
-                j_over_i = (center_x - star_x) * scale_factor
-                k_over_i = (center_y - star_y) * scale_factor
-                i = 1. / np.sqrt(1 + j_over_i**2 + k_over_i**2)
-                j = j_over_i * i
-                k = k_over_i * i
-                vec = np.array([i, j, k])
-                star_vectors.append(vec)
+            scale_factor = np.tan(fov / 2) / width * 2
+            star_vectors = np.ones((len(star_centroids), 3))
+            # Pixel centre of image
+            img_center = [height / 2., width / 2.]
+            # Calculate normal vectors
+            star_vectors[:, 2:0:-1] = (img_center - star_centroids) * scale_factor
+            star_vectors = star_vectors / norm(star_vectors, axis=1)[:, None]
             return star_vectors
 
         t0_solve = precision_timestamp()
         for image_centroids in _generate_patterns_from_centroids(
                                             star_centroids[:pattern_checking_stars], p_size):
-            # compute star vectors using an estimate for the field-of-view in the x dimension
-            pattern_star_vectors = compute_vectors(image_centroids, fov_estimate)
-            # calculate and sort the edges of the star pattern
-            pattern_edges = np.sort([norm(np.subtract(
-                *star_pair)) for star_pair in itertools.combinations(pattern_star_vectors, 2)])
-            # extract the largest edge
-            pattern_largest_edge = pattern_edges[-1]
-            # divide the pattern's edges by the largest edge to create dimensionless ratios
-            pattern_edge_ratios = pattern_edges[:-1] / pattern_largest_edge
-            # Pssible hash codes to look up
+            if fov_estimate is None:
+                # Calculate the largest distance in pixels between centroids, for future FOV estimation.
+                pattern_largest_distance = np.max(norm(
+                    image_centroids[:, None, :] - image_centroids[None, :, :], axis=-1))
+
+            # Compute star vectors using an estimate for the field-of-view in the x dimension
+            pattern_vectors = compute_vectors(image_centroids, fov_initial)
+            # implement more accurate angle calculation
+            edge_angles_sorted = np.sort(2 * np.arcsin(.5 * pdist(pattern_vectors)))
+            pattern_largest_edge = edge_angles_sorted[-1]
+            pattern_edge_ratios = edge_angles_sorted[:-1] / pattern_largest_edge
+
+            # Possible hash codes to look up
             hash_code_space = [range(max(low, 0), min(high+1, p_bins)) for (low, high)
                                in zip(((pattern_edge_ratios - p_max_err) * p_bins).astype(int),
                                       ((pattern_edge_ratios + p_max_err) * p_bins).astype(int))]
             # iterate over hash code space, only looking up non-duplicate codes
+            i = 1
             for hash_code in set(tuple(sorted(code))
                                  for code in itertools.product(*hash_code_space)):
                 hash_code = tuple(hash_code)
                 hash_index = _key_to_index(hash_code, p_bins, self.pattern_catalog.shape[0])
-                matches = _get_at_index(hash_index, self.pattern_catalog)
-                if len(matches) == 0:
+                match_inds = _get_table_index_from_hash(hash_index, self.pattern_catalog)
+                if len(match_inds) == 0:
                     continue
 
-                for match_row in matches:
-                    # retrieve the vectors of the stars in the catalog pattern
-                    catalog_vectors = self.star_table[match_row, 2:5]
-                    # calculate and sort the edges of the star pattern
-                    catalog_edges = np.sort([norm(np.subtract(*star_pair)) for star_pair
-                                            in itertools.combinations(catalog_vectors, 2)])
-                    # extract the largest edge
-                    catalog_largest_edge = catalog_edges[-1]
-                    # divide the edges by the largest edge to create dimensionless ratios
-                    catalog_edge_ratios = catalog_edges[:-1] / catalog_largest_edge
-                    # check if match is within the given maximum allowable error
-                    # note that this also filters out star patterns from colliding bins
-                    if any([abs(val) > p_max_err for val in (catalog_edge_ratios
-                                                             - pattern_edge_ratios)]):
+                if self.pattern_largest_edge is not None \
+                        and fov_estimate is not None \
+                        and fov_max_error is not None:
+                    # Can immediately compare FOV to patterns to remove mismatches
+                    largest_edge = self.pattern_largest_edge[match_inds]
+                    fov2 = largest_edge / pattern_largest_edge * fov_initial / 1000
+                    keep = abs(fov2 - fov_estimate) < fov_max_error
+                    match_inds = match_inds[keep]
+                    if len(match_inds) == 0:
                         continue
-                    # compute the actual field-of-view using least squares optimization
-                    # compute the catalog pattern's edges for error estimation
-                    catalog_edges = np.append(catalog_edge_ratios * catalog_largest_edge,
-                                              catalog_largest_edge)
-                    # helper function that calculates a list of errors in pattern edge lengths
-                    # with the catalog edge lengths for a given fov
+                matches = self.pattern_catalog[match_inds, :]
 
-                    def fov_to_error(fov):
-                        # recalculate the pattern's star vectors given the new fov
-                        pattern_star_vectors = compute_vectors(
-                            image_centroids, fov)
-                        # recalculate the pattern's edge lengths
-                        pattern_edges = np.sort([norm(np.subtract(*star_pair)) for star_pair
-                                                in itertools.combinations(pattern_star_vectors,
-                                                                          2)])
-                        # return a list of errors, one for each edge
-                        return catalog_edges - pattern_edges
-                    # find the fov that minimizes the squared error, starting with the estimate
-                    fov = scipy.optimize.leastsq(fov_to_error, fov_estimate)[0][0]
+                # Get star vectors for all matching hashes
+                catalog_star_vectors = self.star_table[matches, 2:5]
+                # Calculate pattern by angles between vectors
+                # implement more accurate angle calculation
+                # this is a bit manual, I could not see a faster way
+                arr1 = np.take(catalog_star_vectors, upper_tri_index[0], axis=1)
+                arr2 = np.take(catalog_star_vectors, upper_tri_index[1], axis=1)
+                catalog_pattern_edges = np.sort(norm(arr1 - arr2, axis=-1))
 
-                    # If the FOV is incorrect we can skip this immediately
-                    if fov_max_error is not None and abs(fov - fov_estimate) > fov_max_error:
-                        continue
+                catalog_largest_edges = catalog_pattern_edges[:, -1]
+                catalog_edge_ratios = catalog_pattern_edges[:, :-1] / catalog_largest_edges[:, None]
+                # Calculate difference to observed pattern and find sufficiencly close ones
+                max_edge_error = np.amax(np.abs(catalog_edge_ratios - pattern_edge_ratios), axis=1)
+                valid_patterns = np.argwhere(max_edge_error < p_max_err)[:,0]
+                # Go through each matching pattern and calculate further
+                for index in valid_patterns:
+                    catalog_vectors = catalog_star_vectors[index, :]
+                    catalog_edge_ratio = catalog_edge_ratios[index, :]
+                    catalog_largest_edge = catalog_largest_edges[index]
+
+                    if fov_estimate is None:
+                        # Calculate actual fov from pattern pixel distance and catalog edge angle
+                        f = pattern_largest_distance / 2 / np.tan(catalog_largest_edge/2)
+                        fov = 2*np.arctan(width/2/f)
+                    else:
+                        # Calculate actual fov by scaling estimate
+                        fov = catalog_largest_edge / pattern_largest_edge * fov_initial
+                        # If the FOV is incorrect we can skip this immediately
+                        if fov_max_error is not None and abs(fov - fov_estimate) > fov_max_error:
+                            continue
 
                     # Recalculate vectors and uniquely sort them by distance from centroid
-                    pattern_star_vectors = compute_vectors(image_centroids, fov)
+                    pattern_vectors = compute_vectors(image_centroids, fov)
                     # find the centroid, or average position, of the star pattern
-                    pattern_centroid = np.mean(pattern_star_vectors, axis=0)
+                    pattern_centroid = np.mean(pattern_vectors, axis=0)
                     # calculate each star's radius, or Euclidean distance from the centroid
-                    pattern_radii = [norm(star_vector - pattern_centroid)
-                                     for star_vector in pattern_star_vectors]
+                    pattern_radii = cdist(pattern_vectors, pattern_centroid[None, :]).flatten()
                     # use the radii to uniquely order the pattern's star vectors so they can be
                     # matched with the catalog vectors
-                    pattern_sorted_vectors = np.array(pattern_star_vectors)[
-                                                                       np.argsort(pattern_radii)]
-                    # find the centroid, or average position, of the star pattern
-                    catalog_centroid = np.mean(catalog_vectors, axis=0)
-                    # calculate each star's radius, or Euclidean distance from the centroid
-                    catalog_radii = [norm(vector - catalog_centroid) for vector in catalog_vectors]
-                    # use the radii to uniquely order the catalog vectors
-                    catalog_sorted_vectors = catalog_vectors[np.argsort(catalog_radii)]
+                    pattern_sorted_vectors = np.array(pattern_vectors)[np.argsort(pattern_radii)]
+                    if presorted:
+                        catalog_sorted_vectors = catalog_vectors
+                    else:
+                        # find the centroid, or average position, of the star pattern
+                        catalog_centroid = np.mean(catalog_vectors, axis=0)
+                        # calculate each star's radius, or Euclidean distance from the centroid
+                        catalog_radii = cdist(catalog_vectors, catalog_centroid[None, :]).flatten()
+                        # use the radii to uniquely order the catalog vectors
+                        catalog_sorted_vectors = catalog_vectors[np.argsort(catalog_radii)]
 
                     # calculate the least-squares rotation matrix from catalog to image frame
                     def find_rotation_matrix(image_vectors, catalog_vectors):
                         # find the covariance matrix H between the image and catalog vectors
-                        H = np.sum([np.dot(image_vectors[i].reshape((3, 1)),
-                                           catalog_vectors[i].reshape((1, 3)))
-                                    for i in range(len(image_vectors))], axis=0)
+                        H = np.dot(image_vectors.T, catalog_vectors)
                         # use singular value decomposition to find the rotation matrix
                         (U, S, V) = np.linalg.svd(H)
                         rotation_matrix = np.dot(U, V)
+                        # DON'T DO THIS TO SUPPORT MIRRORED IMAGES! Could make some other matches fail
+                        # if the order of vectors is not correct?
                         # correct reflection matrix if determinant is -1 instead of 1
                         # by flipping the sign of the third column of the rotation matrix
-                        rotation_matrix[:, 2] *= np.linalg.det(rotation_matrix)
+                        #rotation_matrix[:, 2] *= np.linalg.det(rotation_matrix)
                         return rotation_matrix
 
                     # Use the pattern match to find an estimate for the image's rotation matrix
@@ -842,48 +1096,62 @@ class Tetra3():
                                                            catalog_sorted_vectors)
                     # calculate all star vectors using the new field-of-view
                     all_star_vectors = compute_vectors(star_centroids, fov)
-                    rotated_star_vectors = np.array([np.dot(rotation_matrix.T, star_vector)
-                                                     for star_vector in all_star_vectors])
+                    rotated_star_vectors = np.dot(rotation_matrix.T, all_star_vectors.T).T
                     # Find all star vectors inside the (diagonal) field of view for matching
                     image_center_vector = rotation_matrix[0, :]
                     fov_diagonal_rad = fov * np.sqrt(width**2 + height**2) / width
-                    nearby_star_vectors = self.star_table[
-                            self._get_nearby_stars(image_center_vector, fov_diagonal_rad/2), 2:5]
+                    # Get (at most) the number of verification stars expected
+                    nearby_star_inds = self._get_nearby_stars(image_center_vector, fov_diagonal_rad/2)[:num_stars]
+                    nearby_star_vectors = self.star_table[nearby_star_inds, 2:5]
                     # Match the nearby star vectors to the proposed measured star vectors
-                    match_tuples = []
-                    for ind, measured_vec in enumerate(rotated_star_vectors):
-                        within_match_radius = (np.dot(measured_vec.reshape((1, 3)),
-                                                      nearby_star_vectors.transpose())
-                                               > np.cos(match_radius * fov)).flatten()
-                        if sum(within_match_radius) == 1:  # If exactly one matching star:
-                            match_ind = within_match_radius.nonzero()[0][0]
-                            match_tuples.append((all_star_vectors[ind],
-                                                 nearby_star_vectors[match_ind]))
-                    # Statistical reasoning for probability that current match is incorrect:
+                    # Each row is a rotated star vector, each column is a nearby star to match with
+                    dists = cdist(rotated_star_vectors, nearby_star_vectors)
+                    # Maximum distance for match
+                    match_th = match_radius * fov
+                    # First col is rotated vector, second col is catalogue vector
+                    matched_stars = np.argwhere(dists < match_th)
+                    # Make sure we only have unique 1-1 matches
+                    matched_stars = matched_stars[np.unique(matched_stars[:, 0], return_index=True)[1], :]
+                    matched_stars = matched_stars[np.unique(matched_stars[:, 1], return_index=True)[1], :]                
+
+                    # Summary of matches
                     num_extracted_stars = len(all_star_vectors)
                     num_nearby_catalog_stars = len(nearby_star_vectors)
-                    num_star_matches = len(match_tuples)
-                    # Probability that a single star is a mismatch
-                    prob_single_star_mismatch = \
-                        1 - (1 - num_nearby_catalog_stars * match_radius**2)
-                    # Two matches can always be made using the degrees of freedom of the pattern
-                    prob_mismatch = scipy.stats.binom.cdf(num_extracted_stars
-                                                          - (num_star_matches - 2),
+                    num_star_matches = matched_stars.shape[0]
+                    self._logger.debug("Number of nearby stars: %d, total matched: %d" \
+                        % (num_nearby_catalog_stars, num_star_matches))
+
+                    # Match array holds all the pairs of good matches
+                    # [0, :, :] is Nx3 of centroid vectors (not rotated)
+                    # [1, :, :] is Nx3 of catalogue vectors
+                    match_array = np.zeros((2, num_star_matches, 3))
+                    match_array[0, :, :] = all_star_vectors[matched_stars[:, 0], :]
+                    match_array[1, :, :] = nearby_star_vectors[matched_stars[:, 1], :]
+                    
+                    # Probability that a single star is a mismatch (fraction of area that are stars)
+                    prob_single_star_mismatch = num_nearby_catalog_stars * match_radius**2
+                    # Probability that this rotation matrix's set of matches happen randomly
+                    # we subtract two degrees of fredom
+                    prob_mismatch = scipy.stats.binom.cdf(num_extracted_stars - (num_star_matches - 2),
                                                           num_extracted_stars,
                                                           1 - prob_single_star_mismatch)
+                    self._logger.debug("Mismatch probability = %.2e, at FOV = %.5fdeg" \
+                        % (prob_mismatch, np.rad2deg(fov)))
                     if prob_mismatch < match_threshold:
                         # Solved in this time
                         t_solve = (precision_timestamp() - t0_solve)*1000
                         # diplay mismatch probability in scientific notation
-                        self._logger.debug("NEW P: %.4g" % prob_mismatch)
+                        self._logger.debug("MATCH ACCEPTED")
+                        self._logger.debug("Prob: %.4g, corr: %.4g"
+                            % (prob_mismatch, prob_mismatch*num_patterns))
                         # if a match has been found, recompute rotation with all matched vectors
-                        rotation_matrix = find_rotation_matrix(*zip(*match_tuples))
-                        # Residuals calculation
-                        measured_vs_catalog = [(np.dot(rotation_matrix.T, pair[0]), pair[1])
-                                               for pair in match_tuples]
-                        angles = np.arcsin([norm(np.cross(m, c)) / norm(m) / norm(c)
-                                            for (m, c) in measured_vs_catalog])
-                        residual = np.rad2deg(np.sqrt(np.mean(angles**2))) * 3600
+                        rotation_matrix = find_rotation_matrix(match_array[0, :, :], match_array[1, :, :])
+                        # Residuals calculation, first rotate centroid vectors to match
+                        match_array[0, :, :] = np.dot(rotation_matrix.T, match_array[0, :, :].T).T
+                        # Calculate angles with more accurate formula
+                        distance = norm(match_array[0, :, :] - match_array[1, :, :], axis=1)
+                        angle = 2 * np.arcsin(.5 * distance)
+                        residual = np.rad2deg(np.sqrt(np.mean(angle**2))) * 3600
                         # extract right ascension, declination, and roll from rotation matrix
                         ra = np.rad2deg(np.arctan2(rotation_matrix[0, 1],
                                                    rotation_matrix[0, 0])) % 360
@@ -895,26 +1163,39 @@ class Tetra3():
                         self._logger.debug("DEC:   %03.8f" % dec + ' deg')
                         self._logger.debug("ROLL:  %03.8f" % roll + ' deg')
                         self._logger.debug("FOV:   %03.8f" % np.rad2deg(fov) + ' deg')
-                        self._logger.debug('MATCH: %i' % len(match_tuples) + ' stars')
+                        self._logger.debug('MATCH: %i' % num_star_matches + ' stars')
                         self._logger.debug('SOLVE: %.2f' % round(t_solve, 2) + ' ms')
                         self._logger.debug('RESID: %.2f' % residual + ' asec')
                         return {'RA': ra, 'Dec': dec, 'Roll': roll, 'FOV': np.rad2deg(fov),
-                                'RMSE': residual, 'Matches': len(match_tuples),
-                                'Prob': prob_mismatch, 'T_solve': t_solve, 'T_extract': t_extract}
+                                'RMSE': residual, 'Matches': num_star_matches,
+                                'Prob': prob_mismatch*num_patterns, 'T_solve': t_solve}
+        
+        # Failed to solve, get time and return None
         t_solve = (precision_timestamp() - t0_solve) * 1000
         self._logger.debug('FAIL: Did not find a match to the stars! It took '
                            + str(round(t_solve)) + ' ms.')
         return {'RA': None, 'Dec': None, 'Roll': None, 'FOV': None, 'RMSE': None, 'Matches': None,
-                'Prob': None, 'T_solve': t_solve, 'T_extract': t_extract}
+                'Prob': None, 'T_solve': t_solve}
 
     def _get_nearby_stars(self, vector, radius):
-        """Get stars within radius radians of the vector."""
-        return np.where(np.dot(np.asarray(vector), self.star_table[:, 2:5].T) > np.cos(radius))[0]
+        """Get star indices within radius radians of the vector."""
+        # Stars must be within this cartesian cube
+        max_dist = 2*np.sin(radius/2)
+        range_x = vector[0] + np.array([-max_dist, max_dist])
+        range_y = vector[1] + np.array([-max_dist, max_dist])
+        range_z = vector[2] + np.array([-max_dist, max_dist])
+        # Per axis, find where data is within the range, then combine
+        possible_x = (self.star_table[:, 2] > range_x[0]) & (self.star_table[:, 2] < range_x[1])
+        possible_y = (self.star_table[:, 3] > range_y[0]) & (self.star_table[:, 3] < range_y[1])
+        possible_z = (self.star_table[:, 4] > range_z[0]) & (self.star_table[:, 4] < range_z[1])
+        possible = np.nonzero(possible_x & possible_y & possible_z)[0]
+        # Find those within the given radius
+        nearby = np.dot(np.asarray(vector), self.star_table[possible, 2:5].T) > np.cos(radius)
+        return possible[nearby]
 
-
-def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsample=None,
+def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsample=None,
                              filtsize=25, bg_sub_mode='local_mean', sigma_mode='global_root_square',
-                             binary_open=True, centroid_window=None, max_area=None, min_area=None,
+                             binary_open=True, centroid_window=None, max_area=100, min_area=5,
                              max_sum=None, min_sum=None, max_axis_ratio=None, max_returned=None,
                              return_moments=False, return_images=False):
     """Extract spot centroids from an image and calculate statistics.
@@ -981,7 +1262,7 @@ def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsampl
     Args:
         image (numpy.ndarray): Image to find centroids in.
         sigma (float, optional): The number of noise standard deviations to threshold at.
-            Default 3.
+            Default 2.
         image_th (float, optional): The value to threshold the image at. If supplied `sigma` and
             `simga_mode` will have no effect.
         crop (tuple, optional): Cropping to apply, see :meth:`tetra3.crop_and_downsample_image`.
@@ -998,13 +1279,14 @@ def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsampl
            to thresholded binary mask.
         centroid_window (int, optional): If supplied, recalculate statistics using a square window
             of the supplied size.
-        max_area (int, optional): Reject spots larger than this.
-        min_area (int, optional): Reject spots smaller than this.
-        max_sum (float, optional): Reject spots with a sum larger than this.
-        min_sum (float, optional): Reject spots with a sum smaller than this.
+        max_area (int, optional): Reject spots larger than this. Defaults to 100 pixels.
+        min_area (int, optional): Reject spots smaller than this. Defaults to 5 pixels.
+        max_sum (float, optional): Reject spots with a sum larger than this. Defaults to None.
+        min_sum (float, optional): Reject spots with a sum smaller than this. Defaults to None.
         max_axis_ratio (float, optional): Reject spots with a ratio of major over minor axis larger
-            than this.
-        max_returned (int, optional): Return at most this many spots.
+            than this. Defaults to None.
+        max_returned (int, optional): Return at most this many spots. Defaults to None, which
+            returns all spots. Will return in order of brightness (spot sum).
         return_moments (bool, optional): If set to True, return the calculated statistics (e.g.
             higher order moments, sum, area) together with the spot positions.
         return_images (bool, optional): If set to True, return a dictionary with partial results
@@ -1158,28 +1440,35 @@ def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsampl
             return (np.nan,)*8
         if max_area and area > max_area:
             return (np.nan,)*8
-        m0 = np.sum(a)
+        centroid = np.sum([a, x*a, y*a], axis=-1)
+        m0 = centroid[0]
         if min_sum and m0 < min_sum:
             return (np.nan,)*8
         if max_sum and m0 > max_sum:
             return (np.nan,)*8
-        m1_x = np.sum(x * a) / m0
-        m1_y = np.sum(y * a) / m0
-        m2_xx = max(0, np.sum((x - m1_x)**2 * a) / m0)
-        m2_yy = max(0, np.sum((y - m1_y)**2 * a) / m0)
-        m2_xy = np.sum((x - m1_x) * (y - m1_y) * a) / m0
-        major = np.sqrt(2 * (m2_xx + m2_yy + np.sqrt((m2_xx - m2_yy)**2 + 4 * m2_xy**2)))
-        minor = np.sqrt(2 * max(0, m2_xx + m2_yy - np.sqrt((m2_xx - m2_yy)**2 + 4 * m2_xy**2)))
-        if max_axis_ratio and minor <= 0:
-            return (np.nan,)*8
-        axis_ratio = major / max(minor, .000000001)
-        if max_axis_ratio and axis_ratio > max_axis_ratio:
-            return (np.nan,)*8
-        return (m0, m1_y+.5, m1_x+.5, m2_xx, m2_yy, m2_xy, area, axis_ratio)
+        centroid[1:] = centroid[1:] / m0
+        m1_x = centroid[1]
+        m1_y = centroid[2]
+        if return_moments or max_axis_ratio is not None:
+            # Need to calculate second order data about the regions, firstly the moments
+            # then use that to get major/minor axes.
+            m2_xx = max(0, np.sum((x - m1_x)**2 * a) / m0)
+            m2_yy = max(0, np.sum((y - m1_y)**2 * a) / m0)
+            m2_xy = np.sum((x - m1_x) * (y - m1_y) * a) / m0
+            major = np.sqrt(2 * (m2_xx + m2_yy + np.sqrt((m2_xx - m2_yy)**2 + 4 * m2_xy**2)))
+            minor = np.sqrt(2 * max(0, m2_xx + m2_yy - np.sqrt((m2_xx - m2_yy)**2 + 4 * m2_xy**2)))
+            if max_axis_ratio and minor <= 0:
+                return (np.nan,)*8
+            axis_ratio = major / max(minor, .000000001)
+            if max_axis_ratio and axis_ratio > max_axis_ratio:
+                return (np.nan,)*8
+            return (m0, m1_y+.5, m1_x+.5, m2_xx, m2_yy, m2_xy, area, axis_ratio)
+        else:
+            return (m0, m1_y+.5, m1_x+.5, np.nan, np.nan, np.nan, area, np.nan)
 
     tmp = scipy.ndimage.labeled_comprehension(image, labels, index, calc_stats, '8f', None,
                                               pass_positions=True)
-    valid = np.all(~np.isnan(tmp), axis=1)
+    valid = ~np.isnan(tmp[:, 0])
     extracted = tmp[valid, :]
     if return_images:
         images_dict['label_statistics'] = bin_mask.copy()
@@ -1217,18 +1506,17 @@ def get_centroids_from_image(image, sigma=3, image_th=None, crop=None, downsampl
         extracted[:, 1:3] = extracted[:, 1:3] * downsample  # Scale centroid
     if crop:
         extracted[:, 1:3] = extracted[:, 1:3] + np.array([offs_h, offs_w])  # Offset centroid
-    # Return results
-    if return_moments and return_images:
-        return ((extracted[:, 1:3], extracted[:, 0], extracted[:, 6], extracted[:, 3:6],
-                 extracted[:, 7]), images_dict)
-    elif return_moments:
-        return (extracted[:, 1:3], extracted[:, 0], extracted[:, 6], extracted[:, 3:6],
-                extracted[:, 7])
-    elif return_images:
-        return (extracted[:, 1:3], images_dict)
-    else:
+    # Return results, default just the centroids 
+    if not any((return_moments, return_images)):
         return extracted[:, 1:3]
-
+    # Otherwise, build list of requested returned items
+    result = [extracted[:, 1:3]]
+    if return_moments:
+        result.append([extracted[:, 0], extracted[:, 6], extracted[:, 3:6],
+                extracted[:, 7]])
+    if return_images:
+        result.append(images_dict)
+    return tuple(result)
 
 def crop_and_downsample_image(image, crop=None, downsample=None, sum_when_downsample=True,
                               return_offsets=False):
@@ -1247,7 +1535,8 @@ def crop_and_downsample_image(image, crop=None, downsample=None, sum_when_downsa
             regions into one. The image width and height must be divisible by this factor.
         sum_when_downsample (bool, optional): If True (the default) downsampled pixels are
             calculated by summing the original pixel values. If False the mean is used.
-        return_offsets (bool, optional): If True, return the applied cropping offset.
+        return_offsets (bool, optional): If set to True, the applied cropping offset from the top
+            left corner is returned.
     Returns:
         numpy.ndarray or tuple: If `return_offsets=False` (the default) a 2D array with the cropped
         and dowsampled image is returned. If `return_offsets=True` is passed a tuple containing

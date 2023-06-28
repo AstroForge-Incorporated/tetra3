@@ -3,8 +3,10 @@ Installation
 
 Getting Python
 --------------
-tetra3 is written for Python 3.7 (and therefore runs on almost any platform) and should work with
-most modern Python 3 installations. There are many ways to get Python on your system. The preferred
+tetra3 is written for Python 3.7+ (and therefore runs on almost any platform) and should work with
+most modern Python 3 installations. There are many ways to get Python on your system. Most easily,
+by going to `the python webiste<https://www.python.org/>`_ and selecting your platform. However,
+the preferred
 method is by `downloading Miniconda for Python 3+ 
 <https://docs.conda.io/en/latest/miniconda.html>`_. If you are on Windows you will be given the
 option to `add conda to PATH` during installation. If you do not select this option, the
@@ -32,7 +34,7 @@ Optional: Environment for tetra3
 To run tetra3 in a python environment that is separated from your other projects (therefore avoiding
 requirements clashes and other issues) you may elect to create an environment. To do so::
 
-    conda create --name tetra3_env python=3.7 pip
+    conda create --name tetra3_env pip
     conda activate tetra3_env
     
 and then proceed the same. (To go to your base environment type ``conda deactivate``.)
