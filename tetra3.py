@@ -834,7 +834,7 @@ class Tetra3():
 
     def solve_from_image(self, image, fov_estimate=None, fov_max_error=None,
                          pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3,
-                         **kwargs):
+                         solve_timeout=None, **kwargs):
         """Solve for the sky location of an image.
 
         Star locations (centroids) are found using :meth:`tetra3.get_centroids_from_image` and
@@ -861,6 +861,8 @@ class Tetra3():
                 as a fraction of the image field of view.
             match_threshold (float, optional): Maximum allowed false-positive probability to accept
                 a tested pattern a valid match. Default 1e-3. NEW: Corrected for the database size.
+            solve_timeout (float, optional): Timeout in milliseconds after which the solver will
+                give up on matching patterns. Defaults to None.
             **kwargs (optional): Other keyword arguments passed to
                 :meth:`tetra3.get_centroids_from_image`.
 
@@ -881,7 +883,8 @@ class Tetra3():
         """
         assert self.has_database, 'No database loaded'
         self._logger.debug('Got solve from image with input: ' + str((image, fov_estimate,
-            fov_max_error, pattern_checking_stars, match_radius, match_threshold, kwargs)))
+            fov_max_error, pattern_checking_stars, match_radius, match_threshold,
+            solve_timeout, kwargs)))
         image = np.asarray(image, dtype=np.float32)
         (height, width) = image.shape[:2]
         self._logger.debug('Image (height, width): ' + str((height, width)))
@@ -895,13 +898,14 @@ class Tetra3():
         solution = self.solve_from_centroids(centroids, (height, width), 
             fov_estimate=fov_estimate, fov_max_error=fov_max_error,
             pattern_checking_stars=pattern_checking_stars, match_radius=match_radius,
-            match_threshold=match_threshold)
+            match_threshold=match_threshold, solve_timeout=solve_timeout)
         # Add extraction time to results and return
         solution['T_extract'] = t_extract
         return solution
 
     def solve_from_centroids(self, star_centroids, size, fov_estimate=None, fov_max_error=None,
-                             pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3):
+                             pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3,
+                             solve_timeout=None):
         """Solve for the sky location using a list of centroids.
 
         Use :meth:`tetra3.get_centroids_from_image` or your own centroiding algorithm to find an
@@ -937,6 +941,8 @@ class Tetra3():
                 as a fraction of the image field of view. Default 0.01.
             match_threshold (float, optional): Maximum allowed false-positive probability to accept
                 a tested pattern a valid match. Default 1e-3. NEW: Corrected for the database size.
+            solve_timeout (float, optional): Timeout in milliseconds after which the solver will
+                give up on matching patterns. Defaults to None.
 
         Returns:
             dict: A dictionary with the following keys is returned:
@@ -955,7 +961,8 @@ class Tetra3():
         assert self.has_database, 'No database loaded'
         self._logger.debug('Got solve from centroids with input: '
                            + str((len(star_centroids), size, fov_estimate, fov_max_error,
-                                  pattern_checking_stars, match_radius, match_threshold)))
+                                  pattern_checking_stars, match_radius, match_threshold,
+                                  solve_timeout)))
 
         star_centroids = np.asarray(star_centroids)
         if fov_estimate is None:
@@ -972,6 +979,9 @@ class Tetra3():
         self._logger.debug('Set threshold to: ' + str(match_threshold) + ', have '
             + str(num_patterns) + ' patterns.')
         pattern_checking_stars = int(pattern_checking_stars)
+        if solve_timeout is not None:
+            # Convert to seconds to match timestamp
+            solve_timeout = float(solve_timeout) / 1000
 
         # extract height (y) and width (x) of image
         (height, width) = size[:2]
@@ -1003,6 +1013,12 @@ class Tetra3():
         t0_solve = precision_timestamp()
         for image_centroids in _generate_patterns_from_centroids(
                                             star_centroids[:pattern_checking_stars], p_size):
+            # Check if timeout has elapsed, then we must give up
+            if solve_timeout is not None:
+                elapsed_time = precision_timestamp() - t0_solve
+                if elapsed_time > solve_timeout:
+                    self._logger.debug('Timeout reached after: ' + str(elapsed_time) + 's.')
+                    break
             if fov_estimate is None:
                 # Calculate the largest distance in pixels between centroids, for future FOV estimation.
                 pattern_largest_distance = np.max(norm(
