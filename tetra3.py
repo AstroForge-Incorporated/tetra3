@@ -309,15 +309,24 @@ class Tetra3():
         """dict: Dictionary of database properties.
 
         Keys:
-            - 'pattern_mode': Method used to identify star patterns.
+            - 'pattern_mode': Method used to identify star patterns. Is always 'edge_ratio'.
             - 'pattern_size': Number of stars in each pattern.
             - 'pattern_bins': Number of bins per dimension in pattern catalog.
-            - 'pattern_max_error' Maximum difference allowed in pattern for a match.
-            - 'max_fov': Maximum angle between stars in the same pattern (Field of View; degrees).
+            - 'pattern_max_error': Maximum difference allowed in pattern for a match.
+            - 'max_fov': Maximum camera horizontal field of view (in degrees) the database is built for.
+                This will also be the angular extent of the largest pattern.
+            - 'min_fov': Minimum camera horizontal field of view (in degrees) the database is built for.
+                This drives the density of stars in the database, patterns may be smaller than this.
             - 'pattern_stars_per_fov': Number of stars used for patterns in each region of size
-              'max_fov'.
-            - 'verification_stars_per_fov': Number of stars in catalog in each region of size 'max_fov'.
+              'min_fov'.
+            - 'verification_stars_per_fov': Number of stars in catalog in each region of size 'min_fov'.
             - 'star_max_magnitude': Dimmest apparent magnitude of stars in database.
+            - 'simplify_pattern': Indicates if pattern simplification was used when building the database.
+            - 'range_ra': The portion of the sky in right ascension (min, max) that is in the database
+                (degrees 0 to 360). If None, the whole sky is included.
+            - 'range_dec': The portion of the sky in declination (min, max) that is in the database
+                (degrees -90 to 90). If None, the whole sky is included.
+            - 'presort_patterns': Indicates if the pattern indices are sorted by distance to the centroid.
         """
         return self._db_props
 
@@ -1301,35 +1310,6 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
             with the results as defined previously and a dictionary with images and data of partial
             results.
     """
-
-    # bg_sub_mode and sigma_mode:
-    # local_median, global_median, global_mean
-
-    # Versatile spot extractor for images, used in tetra3 for wide fields and
-    # in satellite closed-loop tracking.
-    # PROCESS:
-    # 0. Convert to numpy single precision greyscale (32-bit float)
-    # 1. Crop by factor 'crop' if not None (centered crop)
-    # 2. Downsample by factor 'downsample' if not None (sums values)
-    # 3. Subtract background by median filter of 'filtsize' width (odd)
-    # [Set filtsize=None to do single value background subtraction]
-    # 4. If local_sigma False:
-    #        Find RMS or 1.48*MAD for image as global standard deviation
-    #    If local_sigma True:
-    #        Find RMS or 1.48*MAD for local areas of 'filtsize' width to use
-    #        as a pixel-by-pixel estimate of the local standard deviation
-    # 5. Threshold by sigma*[local/global] standard deviation if image_th None, else use image_th
-    # 6. Find area and moments for each region, apply thresholds
-    # 7. Sort by sum, keep at most 'max_returned'
-    # 8. Correct for effects of crop and downsample
-    # RETURNS:
-    # Default: Numpy array size Nx2 with y,x centroid positions (y down, x right)
-    # return_moments=True: 5-tuple with Numpy arrays:
-    #    0: size Nx2 with y,x centroid positions
-    #    1: size N with sum (zeroth moment)
-    #    2: size N with area (pixels)
-    #    3: size Nx3 with xx,yy,xy variances (second moment)
-    #    4: size N with ratio of major/minor axis
 
     # 1. Ensure image is float np array and 2D:
     image = np.asarray(image, dtype=np.float32)
