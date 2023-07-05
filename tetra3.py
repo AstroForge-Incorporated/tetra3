@@ -321,12 +321,14 @@ class Tetra3():
               'min_fov'.
             - 'verification_stars_per_fov': Number of stars in catalog in each region of size 'min_fov'.
             - 'star_max_magnitude': Dimmest apparent magnitude of stars in database.
+            - 'star_catalog': Name of the star catalog (e.g. bcs5, hip_main, tyc_main) the database was
+                built from. Returns 'unknown' for old databases where this data was not saved.
             - 'simplify_pattern': Indicates if pattern simplification was used when building the database.
+            - 'presort_patterns': Indicates if the pattern indices are sorted by distance to the centroid.
             - 'range_ra': The portion of the sky in right ascension (min, max) that is in the database
                 (degrees 0 to 360). If None, the whole sky is included.
             - 'range_dec': The portion of the sky in declination (min, max) that is in the database
                 (degrees -90 to 90). If None, the whole sky is included.
-            - 'presort_patterns': Indicates if the pattern indices are sorted by distance to the centroid.
         """
         return self._db_props
 
@@ -375,6 +377,9 @@ class Tetra3():
                 elif key == 'presort_patterns':
                     self._db_props[key] = False
                     self._logger.debug('No presort_patterns key, set to False')
+                elif key == 'star_catalog':
+                    self._db_props[key] = 'unknown'
+                    self._logger.debug('No star_catalog key, set to unknown')
                 else:
                     self._db_props[key] = None
                     self._logger.warning('Missing key in database (likely version difference): ' + str(key))
