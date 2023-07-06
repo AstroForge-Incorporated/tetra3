@@ -865,8 +865,7 @@ class Tetra3():
                 give up on matching patterns. Defaults to None.
             target_pixel (numpy.ndarray, optional): Pixel coordiates to return RA/Dec for in
                 addition to the default (the centre of the image). Size (N,2) where each row is the
-                (y, x) coordinate measured from top left corner of the image. Defaults to None. Only
-                available if fov_estimate is given; this FOV is used for the offset calculation.
+                (y, x) coordinate measured from top left corner of the image. Defaults to None.
             **kwargs (optional): Other keyword arguments passed to
                 :meth:`tetra3.get_centroids_from_image`.
 
@@ -954,8 +953,7 @@ class Tetra3():
                 give up on matching patterns. Defaults to None.
             target_pixel (numpy.ndarray, optional): Pixel coordiates to return RA/Dec for in
                 addition to the default (the centre of the image). Size (N,2) where each row is the
-                (y, x) coordinate measured from top left corner of the image. Defaults to None. Only
-                available if fov_estimate is given; this FOV is used for the offset calculation.
+                (y, x) coordinate measured from top left corner of the image. Defaults to None.
 
         Returns:
             dict: A dictionary with the following keys is returned:
@@ -1000,7 +998,6 @@ class Tetra3():
             # Convert to seconds to match timestamp
             solve_timeout = float(solve_timeout) / 1000
         if target_pixel is not None:
-            assert fov_estimate is not None, 'Must give fov_estimate to use target_pixel postions'
             target_pixel = np.array(target_pixel)
             if target_pixel.ndim == 1:
                 # Make shape (2,) array to (1,2), to match (N,2) pattern
@@ -1199,10 +1196,19 @@ class Tetra3():
                             % (prob_mismatch, prob_mismatch*num_patterns))
                         # if a match has been found, recompute rotation with all matched vectors
                         rotation_matrix = find_rotation_matrix(match_array[0, :, :], match_array[1, :, :])
-                        # Residuals calculation, first rotate centroid vectors to match
-                        match_array[0, :, :] = np.dot(rotation_matrix.T, match_array[0, :, :].T).T
-                        # Calculate angles with more accurate formula
-                        distance = norm(match_array[0, :, :] - match_array[1, :, :], axis=1)
+
+                        # Next, compare the angles between all vectors to correct the FOV
+                        angles_camera = 2 * np.arcsin(0.5 * pdist(match_array[0, :, :]))
+                        angles_catalogue = 2 * np.arcsin(0.5 * pdist(match_array[1, :, :]))
+                        fov *= np.mean(angles_catalogue / angles_camera)
+
+                        # Find our final matched vectors with fresh FOV and rotation matrix
+                        final_match_vectors = all_star_vectors = \
+                            compute_vectors(star_centroids[matched_stars[:, 0]], fov)
+                        final_match_vectors = np.dot(rotation_matrix.T, final_match_vectors.T).T
+
+                        # Calculate residual angles with more accurate formula
+                        distance = norm(final_match_vectors - match_array[1, :, :], axis=1)
                         angle = 2 * np.arcsin(.5 * distance)
                         residual = np.rad2deg(np.sqrt(np.mean(angle**2))) * 3600
                         # extract right ascension, declination, and roll from rotation matrix
@@ -1222,7 +1228,7 @@ class Tetra3():
                         if target_pixel is not None:
                             self._logger.debug('Calculate RA/Dec for targets: '
                                 + str(target_pixel))
-                            target_vectors = compute_vectors(target_pixel, fov_initial)
+                            target_vectors = compute_vectors(target_pixel, fov)
                             rotated_target_vectors = np.dot(rotation_matrix.T, target_vectors.T).T
                             target_ra = np.rad2deg(np.arctan2(rotated_target_vectors[:,1],
                                                               rotated_target_vectors[:,0])) % 360
