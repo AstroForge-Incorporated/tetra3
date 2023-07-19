@@ -20,7 +20,7 @@ The class :class:`tetra3.Tetra3` has three main methods for solving images:
     - :meth:`Tetra3.generate_database`: Create a new database for your application.
 
 A default database (named `default_database`) is included in the repo, it is built for a field of
-view range of 10 to 20 degrees with stars up to magntude 8.
+view range of 10 to 30 degrees with stars up to magntude 7.
 
 It is critical to set up the centroid extraction parameters (see :meth:`get_centroids_from_image`
 to reliably return star centroids from a given image. After this is done, pass the same keyword
@@ -245,6 +245,7 @@ class Tetra3():
 
         self._logger.debug('Tetra3 Constructor called with load_database=' + str(load_database))
         self._star_table = None
+        self._star_catalog_IDs = None
         self._pattern_catalog = None
         self._pattern_largest_edge = None
         self._verification_catalog = None
@@ -305,6 +306,22 @@ class Tetra3():
         return self._pattern_largest_edge
 
     @property
+    def star_catalog_IDs(self):
+        """numpy.ndarray: Table of catalogue IDs for each entry in the star table.
+
+        The table takes different format depending on the source catalogue used
+        to build the database. See Tetra3.database_properties['star_catalog'] to
+        find the source catalogue.
+        - bsc5: A numpy array of size (N,) with datatype uint16. Stores the 'BSC' number.
+        - hip_main: A numpy array of size (N,) with datatype uint32. Stores the 'HIP' number.
+        - tyc_main: A numpy array of size (N, 3) with datatype uint16. Stores the
+            (TYC1, TYC2, TYC3) numbers.
+
+        Is None if no database is loaded or an older database without IDs stored.
+        """
+        return self._star_catalog_IDs
+
+    @property
     def database_properties(self):
         """dict: Dictionary of database properties.
 
@@ -359,6 +376,11 @@ class Tetra3():
             except KeyError:
                 self._logger.debug('Database does not have largest edge stored, set to None.')
                 self._pattern_largest_edge = None
+            try:
+                self._star_catalog_IDs = data['star_catalog_IDs']
+            except KeyError:
+                self._logger.debug('Database does not have catalogue IDs stored, set to None.')
+                self._star_catalog_IDs = None
 
         self._logger.debug('Unpacking properties')
         for key in self._db_props.keys():
@@ -438,15 +460,16 @@ class Tetra3():
 
         self._logger.debug('Packed properties into: ' + str(props_packed))
         self._logger.debug('Saving as compressed numpy archive')
+
+        to_save = {'star_table': self.star_table,
+            'pattern_catalog': self.pattern_catalog,
+            'props_packed': props_packed}
         if self.pattern_largest_edge is not None:
-            np.savez_compressed(path, star_table = self.star_table,
-                                pattern_catalog = self.pattern_catalog,
-                                pattern_largest_edge = self.pattern_largest_edge,
-                                props_packed = props_packed)
-        else:
-            np.savez_compressed(path, star_table = self.star_table,
-                                pattern_catalog = self.pattern_catalog,
-                                props_packed = props_packed)
+            to_save['pattern_largest_edge'] = self.pattern_largest_edge
+        if self.star_catalog_IDs is not None:
+            to_save['star_catalog_IDs'] = self.star_catalog_IDs
+
+        np.savez_compressed(path, **to_save)
 
     def generate_database(self, max_fov, min_fov=None, save_as=None,
                           star_catalog='hip_main', pattern_stars_per_fov=10,
@@ -466,7 +489,7 @@ class Tetra3():
 
         Note:
             If you wish to build you own database you must download a star catalogue. tetra3 supports three options,
-            where the 'tyc_main' is the default and recommended database to use:
+            where the 'hip_main' is the default and recommended database to use:
             
             * The 285KB Yale Bright Star Catalog 'BSC5' containing 9,110 stars. This is complete to
               to about magnitude seven and is sufficient for >10 deg field-of-view setups.
@@ -497,7 +520,7 @@ class Tetra3():
             save_as (str or pathlib.Path, optional): Save catalogue here when finished. Calls
                 :meth:`save_database`.
             star_catalog (string, optional): Abbreviated name of star catalog, one of 'bsc5',
-                'hip_main', or 'tyc_main'. Default 'bsc5'.
+                'hip_main', or 'tyc_main'. Default 'hip_main'.
             pattern_stars_per_fov (int, optional): Number of stars used for pattern matching in each
                 region of size 'max_fov'. Default 10.
             verification_stars_per_fov (int, optional): Number of stars used for verification of the
@@ -564,8 +587,15 @@ class Tetra3():
              + ' star entries.') 
 
         # Preallocate star table:
-        star_table = np.zeros((num_entries, 6), dtype=np.float32)        
-        
+        star_table = np.zeros((num_entries, 6), dtype=np.float32)
+        # Preallocate ID table
+        if star_catalog == 'bsc5':
+            star_catID = np.zeros(num_entries, dtype=np.uint16)
+        elif star_catalog == 'hip_main':
+            star_catID = np.zeros(num_entries, dtype=np.uint32)
+        else: #is tyc_main
+            star_catID = np.zeros((num_entries, 3), dtype=np.uint16)
+
         # Read magnitude, RA, and Dec from star catalog:
         if star_catalog == 'bsc5':
             bsc5_data_type = [('ID', np.float32), ('RA1950', np.float64),
@@ -580,6 +610,7 @@ class Tetra3():
                         ra  = entry[1] + entry[5] * (current_year - 1950)
                         dec = entry[2] + entry[6] * (current_year - 1950)
                         star_table[i,:] = ([ra, dec, 0, 0, 0, mag])
+                        star_catID[i] = np.uint16(entry[0])
         elif star_catalog in ('hip_main', 'tyc_main'):
             incomplete_entries = 0
             with open(catalog_file_full_pathname, 'r') as star_catalog_file:
@@ -597,6 +628,12 @@ class Tetra3():
                         pmDec = float(entry[13])/1000/60/60  # convert milliarcseconds per year to degrees per year
                         dec = np.deg2rad(float(entry[9]) + pmDec * (current_year - 1991.25))
                         star_table[i,:] = ([ra, dec, 0, 0, 0, mag])
+                        # Find ID, depends on the database
+                        if star_catalog == 'hip_main':
+                            star_catID[i] = np.uint32(entry[1])
+                        else: # is hip_main
+                            star_catID[i, :] = [np.uint16(x) for x in entry[1].split()]
+
                 if incomplete_entries:
                     self._logger.info('Skipped %i incomplete entries.' % incomplete_entries)
 
@@ -604,8 +641,14 @@ class Tetra3():
         # (i.e. keep entries in which either RA or Dec is non-zero)
         kept = np.logical_or(star_table[:, 0]!=0, star_table[:, 1]!=0)
         star_table = star_table[kept, :]
-        star_table = star_table[np.argsort(star_table[:, -1]), :]  # Sort by brightness
+        brightness_ii = np.argsort(star_table[:, -1])
+        star_table = star_table[brightness_ii, :]  # Sort by brightness
         num_entries = star_table.shape[0]
+        # Trim and order catalogue ID array to match
+        if star_catalog in ('bsc5', 'hip_main'):
+            star_catID = star_catID[kept][brightness_ii]
+        else:
+            star_catID = star_catID[kept, :][brightness_ii, :]
         self._logger.info('Loaded ' + str(num_entries) + ' stars with magnitude below ' \
             + str(star_max_magnitude) + '.')
 
@@ -618,6 +661,11 @@ class Tetra3():
                 kept = np.logical_or(star_table[:, 0] > range_ra[0], star_table[:, 0] < range_ra[1])
             star_table = star_table[kept, :]
             num_entries = star_table.shape[0]
+            # Trim down catalogue ID to match
+            if star_catalog in ('bsc5', 'hip_main'):
+                star_catID = star_catID[kept]
+            else:
+                star_catID = star_catID[kept, :]
             self._logger.info('Limited to RA range ' + str(np.rad2deg(range_ra)) + ', keeping ' \
                 + str(num_entries) + ' stars.')
         if range_dec is not None:
@@ -628,15 +676,20 @@ class Tetra3():
                 kept = np.logical_or(star_table[:, 1] > range_dec[0], star_table[:, 1] < range_dec[1])
             star_table = star_table[kept, :]
             num_entries = star_table.shape[0]
+            # Trim down catalogue ID to match
+            if star_catalog in ('bsc5', 'hip_main'):
+                star_catID = star_catID[kept]
+            else:
+                star_catID = star_catID[kept, :]
             self._logger.info('Limited to DEC range ' + str(np.rad2deg(range_dec)) + ', keeping ' \
                 + str(num_entries) + ' stars.')
 
         # Calculate star direction vectors:
         for i in range(0, num_entries):
-            vector = np.array([np.cos(star_table[i,0])*np.cos(star_table[i,1]),
-                               np.sin(star_table[i,0])*np.cos(star_table[i,1]),
-                               np.sin(star_table[i,1])])
-            star_table[i,2:5] = vector
+            vector = np.array([np.cos(star_table[i, 0])*np.cos(star_table[i, 1]),
+                               np.sin(star_table[i, 0])*np.cos(star_table[i, 1]),
+                               np.sin(star_table[i, 1])])
+            star_table[i, 2:5] = vector
         # Insert all stars in a KD-tree for fast neighbour lookup
         self._logger.info('Trimming database to requested star density.')
         all_star_vectors = star_table[:, 2:5]
@@ -746,6 +799,11 @@ class Tetra3():
         star_table = star_table[keep_for_verifying, :]
         pattern_index = (np.cumsum(keep_for_verifying)-1)
         pattern_list = pattern_index[np.array(list(pattern_list))].tolist()
+        # Trim catalogue ID to match
+        if star_catalog in ('bsc5', 'hip_main'):
+            star_catID = star_catID[keep_for_verifying]
+        else:
+            star_catID = star_catID[keep_for_verifying, :]
 
         # Create all pattens by calculating and sorting edge ratios and inserting into hash table
         self._logger.info('Start building catalogue.')
@@ -807,6 +865,7 @@ class Tetra3():
         self._logger.info('Size of uncompressed pattern catalog: %i Bytes.' %pattern_catalog.nbytes)
 
         self._star_table = star_table
+        self._star_catalog_IDs = star_catID
         self._pattern_catalog = pattern_catalog
         if save_largest_edge:
             self._pattern_largest_edge = pattern_largest_edge
@@ -834,7 +893,7 @@ class Tetra3():
 
     def solve_from_image(self, image, fov_estimate=None, fov_max_error=None,
                          pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3,
-                         solve_timeout=None, target_pixel=None, **kwargs):
+                         solve_timeout=None, target_pixel=None, return_matches=False, **kwargs):
         """Solve for the sky location of an image.
 
         Star locations (centroids) are found using :meth:`tetra3.get_centroids_from_image` and
@@ -866,6 +925,8 @@ class Tetra3():
             target_pixel (numpy.ndarray, optional): Pixel coordiates to return RA/Dec for in
                 addition to the default (the centre of the image). Size (N,2) where each row is the
                 (y, x) coordinate measured from top left corner of the image. Defaults to None.
+            return_matches (bool, optional): If set to True, the catalogue entries of the mached
+                stars and their pixel coordinates in the image is returned.
             **kwargs (optional): Other keyword arguments passed to
                 :meth:`tetra3.get_centroids_from_image`.
 
@@ -884,14 +945,23 @@ class Tetra3():
                     target_pixel. Not included if target_pixel=None (the default).
                 - 'Dec_target': Declination in degrees of the pixel positions in target_pixel.
                     Not included if target_pixel=None (the default).
+                - 'matched_stars': An Mx3 list with the (RA, Dec, magnitude) of the M matched stars
+                    that were used in the solution. RA/Dec in degrees. Not included if
+                    return_matches=False (the default).
+                - 'matched_centroids': An Mx2 list with the (y, x) pixel coordinates in the image
+                    corresponding to each matched star. Not included if return_matches=False
+                    (the default).
+                - 'matched_catID': The catalogue ID corresponding to each matched star. See
+                    Tetra3.star_catalog_IDs for information on the format. Not included if
+                    return_matches=False (the default).
 
-                If unsuccsessful in finding a match,  None is returned for all keys of the
-                dictionary except 'T_solve' and 'T_exctract'.
+                If unsuccsessful in finding a match, None is returned for all keys of the
+                dictionary except 'T_solve', and the optional return keys are missing.
         """
         assert self.has_database, 'No database loaded'
         self._logger.debug('Got solve from image with input: ' + str((image, fov_estimate,
             fov_max_error, pattern_checking_stars, match_radius, match_threshold,
-            solve_timeout, target_pixel, kwargs)))
+            solve_timeout, target_pixel, return_matches, kwargs)))
         image = np.asarray(image, dtype=np.float32)
         (height, width) = image.shape[:2]
         self._logger.debug('Image (height, width): ' + str((height, width)))
@@ -906,14 +976,14 @@ class Tetra3():
             fov_estimate=fov_estimate, fov_max_error=fov_max_error,
             pattern_checking_stars=pattern_checking_stars, match_radius=match_radius,
             match_threshold=match_threshold, solve_timeout=solve_timeout,
-            target_pixel=target_pixel)
+            target_pixel=target_pixel, return_matches=return_matches)
         # Add extraction time to results and return
         solution['T_extract'] = t_extract
         return solution
 
     def solve_from_centroids(self, star_centroids, size, fov_estimate=None, fov_max_error=None,
                              pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3,
-                             solve_timeout=None, target_pixel=None):
+                             solve_timeout=None, target_pixel=None, return_matches=False):
         """Solve for the sky location using a list of centroids.
 
         Use :meth:`tetra3.get_centroids_from_image` or your own centroiding algorithm to find an
@@ -954,6 +1024,8 @@ class Tetra3():
             target_pixel (numpy.ndarray, optional): Pixel coordiates to return RA/Dec for in
                 addition to the default (the centre of the image). Size (N,2) where each row is the
                 (y, x) coordinate measured from top left corner of the image. Defaults to None.
+            return_matches (bool, optional): If set to True, the catalogue entries of the mached
+                stars and their pixel coordinates in the image is returned.
 
         Returns:
             dict: A dictionary with the following keys is returned:
@@ -966,18 +1038,29 @@ class Tetra3():
                 - 'Prob': Probability that the solution is a false-positive.
                 - 'T_solve': Time spent searching for a match in milliseconds.
                 - 'RA_target': Right ascension in degrees of the pixel positions passed in
-                    target_pixel. Not included if target_pixel=None (the default).
+                    target_pixel. Not included if target_pixel=None (the default). If a Kx2 array
+                    of target_pixel was passed, this will be a length K list.
                 - 'Dec_target': Declination in degrees of the pixel positions in target_pixel.
-                    Not included if target_pixel=None (the default).
+                    Not included if target_pixel=None (the default). If a Kx2 array
+                    of target_pixel was passed, this will be a length K list.
+                - 'matched_stars': An Mx3 list with the (RA, Dec, magnitude) of the M matched stars
+                    that were used in the solution. RA/Dec in degrees. Not included if
+                    return_matches=False (the default).
+                - 'matched_centroids': An Mx2 list with the (y, x) pixel coordinates in the image
+                    corresponding to each matched star. Not included if return_matches=False
+                    (the default).
+                - 'matched_catID': The catalogue ID corresponding to each matched star. See
+                    Tetra3.star_catalog_IDs for information on the format. Not included if
+                    return_matches=False (the default).
 
-                If unsuccsessful in finding a match,  None is returned for all keys of the
-                dictionary except 'T_solve'.
+                If unsuccsessful in finding a match, None is returned for all keys of the
+                dictionary except 'T_solve', and the optional return keys are missing.
         """
         assert self.has_database, 'No database loaded'
         self._logger.debug('Got solve from centroids with input: '
                            + str((len(star_centroids), size, fov_estimate, fov_max_error,
                                   pattern_checking_stars, match_radius, match_threshold,
-                                  solve_timeout, target_pixel)))
+                                  solve_timeout, target_pixel, return_matches)))
 
         star_centroids = np.asarray(star_centroids)
         if fov_estimate is None:
@@ -1002,6 +1085,7 @@ class Tetra3():
             if target_pixel.ndim == 1:
                 # Make shape (2,) array to (1,2), to match (N,2) pattern
                 target_pixel = target_pixel[None, :]
+        return_matches = bool(return_matches)
 
         # extract height (y) and width (x) of image
         (height, width) = size[:2]
@@ -1240,6 +1324,11 @@ class Tetra3():
                             else:
                                 solution_dict['RA_target'] = target_ra[0]
                                 solution_dict['Dec_target'] = target_dec[0]
+                        # If requested to return data about matches, append to dict
+                        if return_matches:
+                            match_data = self._get_matched_star_data(
+                                star_centroids[matched_stars[:, 0]], nearby_star_inds[matched_stars[:, 1]])
+                            solution_dict.update(match_data)
 
                         self._logger.debug(solution_dict)
                         return solution_dict
@@ -1266,6 +1355,32 @@ class Tetra3():
         # Find those within the given radius
         nearby = np.dot(np.asarray(vector), self.star_table[possible, 2:5].T) > np.cos(radius)
         return possible[nearby]
+
+    def _get_matched_star_data(self, centroid_data, star_indices):
+        """Get dictionary of matched star data to return.
+
+        centroid_data: ndarray of centroid data Nx2, each row (y, x)
+        star_indices: ndarray of matching star indices len N
+
+        return dict with keys:
+            - matched_centroids: Nx2 (y, x) in pixel coordinates, sorted by brightness
+            - matched_stars: Nx3 (ra (deg), dec (deg), magnitude)
+            - matched_catID: (N,) or (N, 3) with catalogue ID
+        """
+        output = {}
+        output['matched_centroids'] = centroid_data.tolist()
+        stars = self.star_table[star_indices, :][:, [0, 1, 5]]
+        stars[:,:2] = np.rad2deg(stars[:,:2])
+        output['matched_stars'] = stars.tolist()
+        if self.star_catalog_IDs is None:
+            output['matched_catID'] = None
+        elif len(self.star_catalog_IDs.shape) > 1:
+            # Have 2D array, pick rows
+            output['matched_catID'] = self.star_catalog_IDs[star_indices, :].tolist()
+        else:
+            # Have 1D array, pick indices
+            output['matched_catID'] = self.star_catalog_IDs[star_indices].tolist()
+        return output
 
 def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsample=None,
                              filtsize=25, bg_sub_mode='local_mean', sigma_mode='global_root_square',
