@@ -134,21 +134,21 @@ def _key_to_index(key, bin_factor, max_index):
     # Randomise by magic constant and modulo to maximum index
     return (index * _MAGIC_RAND) % max_index
 
-def _generate_patterns_from_centroids(star_centroids, pattern_size):
+def _generate_patterns_from_centroids(centroids, pattern_size):
     """Iterate over centroids in order of brightness."""
     # break if there aren't enough centroids to make even one pattern
-    if len(star_centroids) < pattern_size:
+    if len(centroids) < pattern_size:
         return
-    star_centroids = np.array(star_centroids)
+    centroids = np.array(centroids)
     # create a list of the pattern's centroid indices
     # add the lower and upper index bounds as the first
     # and last elements, respectively
-    pattern_indices = [-1] + list(range(pattern_size)) + [len(star_centroids)]
+    pattern_indices = [-1] + list(range(pattern_size)) + [len(centroids)]
     # output the very brightest centroids before doing anything else
-    yield star_centroids[pattern_indices[1:-1]]
+    yield centroids[pattern_indices[1:-1]]
     # iterate until the very dimmest centroids have been output
     # which occurs when the first pattern index has reached its maximum value
-    while pattern_indices[1] < len(star_centroids) - pattern_size:
+    while pattern_indices[1] < len(centroids) - pattern_size:
         # increment the pattern indices in order
         for index_to_change in range(1, pattern_size + 1):
             pattern_indices[index_to_change] += 1
@@ -160,13 +160,14 @@ def _generate_patterns_from_centroids(star_centroids, pattern_size):
             else:
                 pattern_indices[index_to_change] = pattern_indices[index_to_change - 1] + 1
         # output the centroids corresponding to the current set of pattern indices
-        yield star_centroids[pattern_indices[1:-1]]
+        yield centroids[pattern_indices[1:-1]]
 
 def _compute_vectors(centroids, size, fov):
     """Get unit vectors from star centroids (pinhole camera)."""
     # compute list of (i,j,k) vectors given list of (y,x) star centroids and
     # an estimate of the image's field-of-view in the x dimension
     # by applying the pinhole camera equations
+    centroids = np.array(centroids, dtype=np.float32)
     (height, width) = size[:2]
     scale_factor = np.tan(fov/2)/width*2
     star_vectors = np.ones((len(centroids), 3))
@@ -203,6 +204,7 @@ def _undistort_centroids(centroids, size, k):
     size: (height, width) in pixels.
     k: % distortion, negative is barrel, positive is pincushion
     """
+    centroids = np.array(centroids, dtype=np.float32)
     (height, width) = size[:2]
     # Centre
     centroids -= [height/2, width/2]
@@ -1135,7 +1137,7 @@ class Tetra3():
                                   pattern_checking_stars, match_radius, match_threshold,
                                   solve_timeout, target_pixel, return_matches)))
 
-        star_centroids = np.asarray(star_centroids)
+        image_centroids = np.asarray(star_centroids)
         if fov_estimate is None:
             # If no FOV given at all, guess middle of the range for a start
             fov_initial = np.deg2rad((self._db_props['max_fov'] + self._db_props['min_fov'])/2)
@@ -1170,12 +1172,12 @@ class Tetra3():
         presorted = self._db_props['presort_patterns']
         upper_tri_index = np.triu_indices(p_size, 1)
 
-        star_centroids = star_centroids[:num_stars, :]
-        self._logger.debug('Trimmed centroid_input shape to: ' + str(star_centroids.shape))
+        image_centroids = image_centroids[:num_stars, :]
+        self._logger.debug('Trimmed centroid_input shape to: ' + str(image_centroids.shape))
 
         t0_solve = precision_timestamp()
-        for image_centroids in _generate_patterns_from_centroids(
-                                            star_centroids[:pattern_checking_stars], p_size):
+        for image_pattern_centroids in _generate_patterns_from_centroids(
+                                            image_centroids[:pattern_checking_stars], p_size):
             # Check if timeout has elapsed, then we must give up
             if solve_timeout is not None:
                 elapsed_time = precision_timestamp() - t0_solve
@@ -1185,119 +1187,111 @@ class Tetra3():
             if fov_estimate is None:
                 # Calculate the largest distance in pixels between centroids, for future FOV estimation.
                 pattern_largest_distance = np.max(norm(
-                    image_centroids[:, None, :] - image_centroids[None, :, :], axis=-1))
+                    image_pattern_centroids[:, None, :] - image_pattern_centroids[None, :, :], axis=-1))
 
             # Compute star vectors using an estimate for the field-of-view in the x dimension
-            pattern_vectors = _compute_vectors(image_centroids, (height, width), fov_initial)
+            image_pattern_vectors = _compute_vectors(image_pattern_centroids, (height, width), fov_initial)
             # implement more accurate angle calculation
-            edge_angles_sorted = np.sort(2 * np.arcsin(.5 * pdist(pattern_vectors)))
-            pattern_largest_edge = edge_angles_sorted[-1]
-            pattern_edge_ratios = edge_angles_sorted[:-1] / pattern_largest_edge
+            edge_angles_sorted = np.sort(2 * np.arcsin(.5 * pdist(image_pattern_vectors)))
+            image_pattern_largest_edge = edge_angles_sorted[-1]
+            image_pattern_edge_ratios = edge_angles_sorted[:-1] / image_pattern_largest_edge
 
             # Possible hash codes to look up
             hash_code_space = [range(max(low, 0), min(high+1, p_bins)) for (low, high)
-                               in zip(((pattern_edge_ratios - p_max_err) * p_bins).astype(int),
-                                      ((pattern_edge_ratios + p_max_err) * p_bins).astype(int))]
+                               in zip(((image_pattern_edge_ratios - p_max_err) * p_bins).astype(int),
+                                      ((image_pattern_edge_ratios + p_max_err) * p_bins).astype(int))]
             # iterate over hash code space, only looking up non-duplicate codes
             i = 1
             for hash_code in set(tuple(sorted(code))
                                  for code in itertools.product(*hash_code_space)):
                 hash_code = tuple(hash_code)
                 hash_index = _key_to_index(hash_code, p_bins, self.pattern_catalog.shape[0])
-                match_inds = _get_table_index_from_hash(hash_index, self.pattern_catalog)
-                if len(match_inds) == 0:
+                hash_match_inds = _get_table_index_from_hash(hash_index, self.pattern_catalog)
+                if len(hash_match_inds) == 0:
                     continue
 
                 if self.pattern_largest_edge is not None \
                         and fov_estimate is not None \
                         and fov_max_error is not None:
                     # Can immediately compare FOV to patterns to remove mismatches
-                    largest_edge = self.pattern_largest_edge[match_inds]
-                    fov2 = largest_edge / pattern_largest_edge * fov_initial / 1000
+                    largest_edge = self.pattern_largest_edge[hash_match_inds]
+                    fov2 = largest_edge / image_pattern_largest_edge * fov_initial / 1000
                     keep = abs(fov2 - fov_estimate) < fov_max_error
-                    match_inds = match_inds[keep]
-                    if len(match_inds) == 0:
+                    hash_match_inds = hash_match_inds[keep]
+                    if len(hash_match_inds) == 0:
                         continue
-                matches = self.pattern_catalog[match_inds, :]
+                catalog_matches = self.pattern_catalog[hash_match_inds, :]
 
                 # Get star vectors for all matching hashes
-                catalog_star_vectors = self.star_table[matches, 2:5]
+                all_catalog_pattern_vectors = self.star_table[catalog_matches, 2:5]
                 # Calculate pattern by angles between vectors
                 # implement more accurate angle calculation
                 # this is a bit manual, I could not see a faster way
-                arr1 = np.take(catalog_star_vectors, upper_tri_index[0], axis=1)
-                arr2 = np.take(catalog_star_vectors, upper_tri_index[1], axis=1)
+                arr1 = np.take(all_catalog_pattern_vectors, upper_tri_index[0], axis=1)
+                arr2 = np.take(all_catalog_pattern_vectors, upper_tri_index[1], axis=1)
                 catalog_pattern_edges = np.sort(norm(arr1 - arr2, axis=-1))
 
-                catalog_largest_edges = catalog_pattern_edges[:, -1]
-                catalog_edge_ratios = catalog_pattern_edges[:, :-1] / catalog_largest_edges[:, None]
+                all_catalog_largest_edges = catalog_pattern_edges[:, -1]
+                all_catalog_edge_ratios = catalog_pattern_edges[:, :-1] / all_catalog_largest_edges[:, None]
                 # Calculate difference to observed pattern and find sufficiencly close ones
-                max_edge_error = np.amax(np.abs(catalog_edge_ratios - pattern_edge_ratios), axis=1)
+                max_edge_error = np.amax(np.abs(all_catalog_edge_ratios - image_pattern_edge_ratios), axis=1)
                 valid_patterns = np.argwhere(max_edge_error < p_max_err)[:,0]
                 # Go through each matching pattern and calculate further
                 for index in valid_patterns:
-                    catalog_vectors = catalog_star_vectors[index, :]
-                    catalog_edge_ratio = catalog_edge_ratios[index, :]
-                    catalog_largest_edge = catalog_largest_edges[index]
-
+                    # Calculate the (coarse) field of view by comparing largest edge in the image and catalogue
+                    catalog_largest_edge = all_catalog_largest_edges[index]
                     if fov_estimate is None:
                         # Calculate actual fov from pattern pixel distance and catalog edge angle
                         f = pattern_largest_distance / 2 / np.tan(catalog_largest_edge/2)
                         fov = 2*np.arctan(width/2/f)
                     else:
                         # Calculate actual fov by scaling estimate
-                        fov = catalog_largest_edge / pattern_largest_edge * fov_initial
+                        fov = catalog_largest_edge / image_pattern_largest_edge * fov_initial
                         # If the FOV is incorrect we can skip this immediately
                         if fov_max_error is not None and abs(fov - fov_estimate) > fov_max_error:
                             continue
 
                     # Recalculate vectors and uniquely sort them by distance from centroid
-                    pattern_vectors = _compute_vectors(image_centroids, (height, width), fov)
+                    image_pattern_vectors = _compute_vectors(image_pattern_centroids, (height, width), fov)
                     # find the centroid, or average position, of the star pattern
-                    pattern_centroid = np.mean(pattern_vectors, axis=0)
+                    pattern_centroid = np.mean(image_pattern_vectors, axis=0)
                     # calculate each star's radius, or Euclidean distance from the centroid
-                    pattern_radii = cdist(pattern_vectors, pattern_centroid[None, :]).flatten()
+                    pattern_radii = cdist(image_pattern_vectors, pattern_centroid[None, :]).flatten()
                     # use the radii to uniquely order the pattern's star vectors so they can be
                     # matched with the catalog vectors
-                    pattern_sorted_vectors = np.array(pattern_vectors)[np.argsort(pattern_radii)]
-                    if presorted:
-                        catalog_sorted_vectors = catalog_vectors
-                    else:
+                    image_pattern_vectors = np.array(image_pattern_vectors)[np.argsort(pattern_radii)]
+
+                    # Now get pattern vectors from catalogue, and sort if necessary
+                    catalog_pattern_vectors = all_catalog_pattern_vectors[index, :]
+                    if not presorted:
                         # find the centroid, or average position, of the star pattern
-                        catalog_centroid = np.mean(catalog_vectors, axis=0)
+                        catalog_centroid = np.mean(catalog_pattern_vectors, axis=0)
                         # calculate each star's radius, or Euclidean distance from the centroid
-                        catalog_radii = cdist(catalog_vectors, catalog_centroid[None, :]).flatten()
+                        catalog_radii = cdist(catalog_pattern_vectors, catalog_centroid[None, :]).flatten()
                         # use the radii to uniquely order the catalog vectors
-                        catalog_sorted_vectors = catalog_vectors[np.argsort(catalog_radii)]
+                        catalog_pattern_vectors = catalog_pattern_vectors[np.argsort(catalog_radii)]
 
                     # Use the pattern match to find an estimate for the image's rotation matrix
-                    rotation_matrix = _find_rotation_matrix(pattern_sorted_vectors,
-                                                            catalog_sorted_vectors)
-                    # calculate all star vectors using the new field-of-view
-                    all_star_vectors = _compute_vectors(star_centroids, (height, width), fov)
-                    rotated_star_vectors = np.dot(rotation_matrix.T, all_star_vectors.T).T
+                    rotation_matrix = _find_rotation_matrix(image_pattern_vectors,
+                                                            catalog_pattern_vectors)
+
                     # Find all star vectors inside the (diagonal) field of view for matching
                     image_center_vector = rotation_matrix[0, :]
                     fov_diagonal_rad = fov * np.sqrt(width**2 + height**2) / width
                     nearby_star_inds = self._get_nearby_stars(image_center_vector, fov_diagonal_rad/2)
                     nearby_star_vectors = self.star_table[nearby_star_inds, 2:5]
 
-                    # Derotate nearby stars and get their (undistorted) centroids
+                    # Derotate nearby stars and get their (undistorted) centroids using coarse fov
                     nearby_star_vectors_derot = np.dot(rotation_matrix, nearby_star_vectors.T).T
                     (nearby_star_centroids, kept) = _compute_centroids(nearby_star_vectors_derot, (height, width), fov)
                     nearby_star_vectors = nearby_star_vectors[kept, :]
                     nearby_star_inds = nearby_star_inds[kept]
-                    matched_stars = _find_centroid_matches(star_centroids, nearby_star_centroids, width*match_radius)
-                    # Summary of matches
-                    num_extracted_stars = len(star_centroids)
+
+                    # Match these centroids to the image
+                    matched_stars = _find_centroid_matches(image_centroids, nearby_star_centroids, width*match_radius)
+                    num_extracted_stars = len(image_centroids)
                     num_nearby_catalog_stars = len(nearby_star_centroids)
                     num_star_matches = len(matched_stars)
-
-                    # Extract the sets of vectors
-                    matched_image_vectors = _compute_vectors(star_centroids[matched_stars[:, 0], :],
-                        (height, width), fov)
-                    matched_catalog_vectors = nearby_star_vectors[matched_stars[:, 1], :]
-
                     self._logger.debug("Number of nearby stars: %d, total matched: %d" \
                         % (num_nearby_catalog_stars, num_star_matches))
                     
@@ -1315,44 +1309,14 @@ class Tetra3():
                         self._logger.debug("MATCH ACCEPTED")
                         self._logger.debug("Prob: %.4g, corr: %.4g"
                             % (prob_mismatch, prob_mismatch*num_patterns))
-                        # if a match has been found, recompute rotation with all matched vectors
+
+                        # Get the vectors for all matches in the image using coarse fov
+                        matched_image_centroids = image_centroids[matched_stars[:, 0], :]
+                        matched_image_vectors = _compute_vectors(matched_image_centroids,
+                            (height, width), fov)
+                        matched_catalog_vectors = nearby_star_vectors[matched_stars[:, 1], :]
+                        # Recompute rotation matrix for more accuracy
                         rotation_matrix = _find_rotation_matrix(matched_image_vectors, matched_catalog_vectors)
-
-                        # Get the tangent of the angle from image centre for all matches
-                        matched_vectors_derotated = np.dot(rotation_matrix, matched_catalog_vectors.T).T
-                        tan_ang_matched_vectors = norm(matched_vectors_derotated[:,1:], axis=1) \
-                                                    / matched_vectors_derotated[:,0]
-                        # Get the (distorted) pixel distance from image centre for all matches
-                        # (scaled relative to width/2)
-                        rd_matched_centroids = norm(star_centroids[matched_stars[:, 0]] 
-                                                    - [height/2, width/2], axis=1)/width*2
-                        # Solve system of equations in RMS sense for focal length f and distortion k
-                        # where f is focal length in units of image width/2
-                        # and k is distortion in % at width/2 (negative is barrel)
-                        A = np.hstack((tan_ang_matched_vectors[:, None], 
-                                       rd_matched_centroids[:, None]**3/100))
-                        b = rd_matched_centroids[:, None]
-                        (f, k) = lstsq(A, b, rcond=None)[0].flatten()
-                        # Calculate (horizontal) true field of view, and what it
-                        # will be when the centroids are undistorted
-                        fov = 2*np.arctan((1 - k/100)/f)
-                        fov_undistorted = 2*np.arctan(1/f)
-
-                        # Now correct centroids with fov and distortion
-                        matched_centroids = star_centroids[matched_stars[:, 0], :]
-                        # Undistort
-                        matched_centroids = _undistort_centroids(matched_centroids,
-                            (height, width), k)
-                        # Get vectors
-                        final_match_vectors = _compute_vectors(matched_centroids,
-                            (height, width), fov_undistorted)
-                        # Rotate to the sky
-                        final_match_vectors = np.dot(rotation_matrix.T, final_match_vectors.T).T
-
-                        # Calculate residual angles with more accurate formula
-                        distance = norm(final_match_vectors - matched_catalog_vectors, axis=1)
-                        angle = 2 * np.arcsin(.5 * distance)
-                        residual = np.rad2deg(np.sqrt(np.mean(angle**2))) * 3600
                         # extract right ascension, declination, and roll from rotation matrix
                         ra = np.rad2deg(np.arctan2(rotation_matrix[0, 1],
                                                    rotation_matrix[0, 0])) % 360
@@ -1360,6 +1324,46 @@ class Tetra3():
                                                     norm(rotation_matrix[1:3, 2])))
                         roll = np.rad2deg(np.arctan2(rotation_matrix[1, 2],
                                                      rotation_matrix[2, 2])) % 360
+
+                        # Accurately calculate the FOV and distortion by looking at the angle from boresight
+                        # on all matched catalogue vectors and all matched image centroids
+                        matched_catalog_vectors_derot = np.dot(rotation_matrix, matched_catalog_vectors.T).T
+                        tangent_matched_catalog_vectors = norm(matched_catalog_vectors_derot[:, 1:], axis=1) \
+                                                              /matched_catalog_vectors_derot[:, 0]
+                        # Get the (distorted) pixel distance from image centre for all matches
+                        # (scaled relative to width/2)
+                        radius_matched_image_centroids = norm(matched_image_centroids
+                                                             - [height/2, width/2], axis=1)/width*2
+                        # Solve system of equations in RMS sense for focal length f and distortion k
+                        # where f is focal length in units of image width/2
+                        # and k is distortion in % at width/2 (negative is barrel)
+                        # undistorted = distorted*(1 - k^2/100*(distorted*2/width)^2)
+                        A = np.hstack((tangent_matched_catalog_vectors[:, None],
+                                       radius_matched_image_centroids[:, None]**3/100))
+                        b = radius_matched_image_centroids[:, None]
+                        (f, k) = lstsq(A, b, rcond=None)[0].flatten()
+                        self._logger.debug('Calculated focal length to %.2f and distortion to %.3f' % (f, k))
+                        # Calculate (horizontal) true field of view, and what it
+                        # will be when the centroids are undistorted
+                        fov = 2*np.arctan((1 - k/100)/f)
+                        fov_undistorted = 2*np.arctan(1/f)
+
+                        # Now correct centroids with fov and distortion
+                        matched_image_centroids = image_centroids[matched_stars[:, 0], :]
+                        # Undistort
+                        matched_image_centroids_undist = _undistort_centroids(
+                            matched_image_centroids, (height, width), k)
+                        # Get vectors
+                        final_match_vectors = _compute_vectors(
+                            matched_image_centroids_undist, (height, width), fov_undistorted)
+                        # Rotate to the sky
+                        final_match_vectors = np.dot(rotation_matrix.T, final_match_vectors.T).T
+
+                        # Calculate residual angles with more accurate formula
+                        distance = norm(final_match_vectors - matched_catalog_vectors, axis=1)
+                        angle = 2 * np.arcsin(.5 * distance)
+                        residual = np.rad2deg(np.sqrt(np.mean(angle**2))) * 3600
+
                         # Solved in this time
                         t_solve = (precision_timestamp() - t0_solve)*1000
                         solution_dict = {'RA': ra, 'Dec': dec, 'Roll': roll,
@@ -1375,13 +1379,15 @@ class Tetra3():
                                 + str(target_pixel))
                             # Calculate the vector in the sky of the target pixel(s)
                             target_pixel = _undistort_centroids(target_pixel, (height, width), k)
-                            target_vectors = _compute_vectors(target_pixel, (height, width), fov)
+                            target_vectors = _compute_vectors(
+                                target_pixel, (height, width), fov_undistorted)
                             rotated_target_vectors = np.dot(rotation_matrix.T, target_vectors.T).T
                             # Calculate and add RA/Dec to solution
-                            target_ra = np.rad2deg(np.arctan2(rotated_target_vectors[:,1],
-                                                              rotated_target_vectors[:,0])) % 360
+                            target_ra = np.rad2deg(np.arctan2(rotated_target_vectors[:, 1],
+                                                              rotated_target_vectors[:, 0])) % 360
                             target_dec = 90 - np.rad2deg(
-                                np.arccos(np.dot(rotated_target_vectors, [0,0,1])))
+                                np.arccos(rotated_target_vectors[:,2]))
+
                             if target_ra.shape[0] > 1:
                                 solution_dict['RA_target'] = target_ra.tolist()
                                 solution_dict['Dec_target'] = target_dec.tolist()
@@ -1391,7 +1397,7 @@ class Tetra3():
                         # If requested to return data about matches, append to dict
                         if return_matches:
                             match_data = self._get_matched_star_data(
-                                star_centroids[matched_stars[:, 0]], nearby_star_inds[matched_stars[:, 1]])
+                                image_centroids[matched_stars[:, 0]], nearby_star_inds[matched_stars[:, 1]])
                             solution_dict.update(match_data)
 
                         self._logger.debug(solution_dict)
