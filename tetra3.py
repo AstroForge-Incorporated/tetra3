@@ -107,7 +107,6 @@ from scipy.spatial.distance import pdist, cdist
 _MAGIC_RAND = 2654435761
 _supported_databases = ('bsc5', 'hip_main', 'tyc_main')
 
-
 def _insert_at_index(item, index, table):
     """Inserts to table with quadratic probing."""
     max_ind = table.shape[0]
@@ -128,14 +127,12 @@ def _get_table_index_from_hash(hash_index, table):
         else:
             found.append(i)
 
-
 def _key_to_index(key, bin_factor, max_index):
     """Get hash index for a given key."""
     # Get key as a single integer
     index = sum(int(val) * int(bin_factor)**i for (i, val) in enumerate(key))
     # Randomise by magic constant and modulo to maximum index
     return (index * _MAGIC_RAND) % max_index
-
 
 def _generate_patterns_from_centroids(star_centroids, pattern_size):
     """Iterate over centroids in order of brightness."""
@@ -165,6 +162,47 @@ def _generate_patterns_from_centroids(star_centroids, pattern_size):
         # output the centroids corresponding to the current set of pattern indices
         yield star_centroids[pattern_indices[1:-1]]
 
+def _compute_vectors(centroids, size, fov):
+    """Get unit vectors from star centroids (pinhole camera)."""
+    # compute list of (i,j,k) vectors given list of (y,x) star centroids and
+    # an estimate of the image's field-of-view in the x dimension
+    # by applying the pinhole camera equations
+    (height, width) = size[:2]
+    scale_factor = np.tan(fov/2)/width*2
+    star_vectors = np.ones((len(centroids), 3))
+    # Pixel centre of image
+    img_center = [height/2, width/2]
+    # Calculate normal vectors
+    star_vectors[:, 2:0:-1] = (img_center - centroids) * scale_factor
+    star_vectors = star_vectors / norm(star_vectors, axis=1)[:, None]
+    return star_vectors
+
+def _undistort_centroids(centroids, size, k):
+    """Apply r_u = r_d(1 - k'*r_d^2) undistortion, where k'=k/100*(2/width)^2,
+    i.e. k is in % and that distortion applies width/2 away from the centre.
+    centroids: Nx2 pixel coordinates (y, x), (0.5, 0.5) top left pixel centre.
+    size: (height, width) in pixels.
+    k: % distortion, negative is barrel, positive is pincushion
+    """
+    (height, width) = size[:2]
+    # Centre
+    centroids -= [height/2, width/2]
+    # Scale
+    scale = 1 - k/100*(norm(centroids, axis=1)/width*2)**2
+    centroids *= scale[:, None]
+    # Decentre
+    centroids += [height/2, width/2]
+    return centroids
+
+def _find_rotation_matrix(image_vectors, catalog_vectors):
+    """Calculate the least squares best rotation matrix between the two sets of vectors.
+    image_vectors and catalog_vectors both Nx3. Must be ordered as matching pairs.
+    """
+    # find the covariance matrix H between the image and catalog vectors
+    H = np.dot(image_vectors.T, catalog_vectors)
+    # use singular value decomposition to find the rotation matrix
+    (U, S, V) = np.linalg.svd(H)
+    return np.dot(U, V)
 
 class Tetra3():
     """Solve star patterns and manage databases.
@@ -1007,7 +1045,7 @@ class Tetra3():
         Args:
             star_centroids (numpy.ndarray): (N,2) list of centroids, ordered by brightest first.
                 Each row is the (y, x) position of the star measured from the top left corner.
-            size (tuple of floats): (width, height) of the centroid coordinate system (i.e. 
+            size (tuple of floats): (height, width) of the centroid coordinate system (i.e.
                 image resolution).
             fov_estimate (float, optional): Estimated field of view of the image in degrees. Default
                 None.
@@ -1100,20 +1138,6 @@ class Tetra3():
         star_centroids = star_centroids[:num_stars, :]
         self._logger.debug('Trimmed centroid_input shape to: ' + str(star_centroids.shape))
 
-        def compute_vectors(star_centroids, fov):
-            """Get unit vectors from star centroids (pinhole camera)."""
-            # compute list of (i,j,k) vectors given list of (y,x) star centroids and
-            # an estimate of the image's field-of-view in the x dimension
-            # by applying the pinhole camera equations
-            scale_factor = np.tan(fov / 2) / width * 2
-            star_vectors = np.ones((len(star_centroids), 3))
-            # Pixel centre of image
-            img_center = [height / 2., width / 2.]
-            # Calculate normal vectors
-            star_vectors[:, 2:0:-1] = (img_center - star_centroids) * scale_factor
-            star_vectors = star_vectors / norm(star_vectors, axis=1)[:, None]
-            return star_vectors
-
         t0_solve = precision_timestamp()
         for image_centroids in _generate_patterns_from_centroids(
                                             star_centroids[:pattern_checking_stars], p_size):
@@ -1129,7 +1153,7 @@ class Tetra3():
                     image_centroids[:, None, :] - image_centroids[None, :, :], axis=-1))
 
             # Compute star vectors using an estimate for the field-of-view in the x dimension
-            pattern_vectors = compute_vectors(image_centroids, fov_initial)
+            pattern_vectors = _compute_vectors(image_centroids, (height, width), fov_initial)
             # implement more accurate angle calculation
             edge_angles_sorted = np.sort(2 * np.arcsin(.5 * pdist(pattern_vectors)))
             pattern_largest_edge = edge_angles_sorted[-1]
@@ -1193,7 +1217,7 @@ class Tetra3():
                             continue
 
                     # Recalculate vectors and uniquely sort them by distance from centroid
-                    pattern_vectors = compute_vectors(image_centroids, fov)
+                    pattern_vectors = _compute_vectors(image_centroids, (height, width), fov)
                     # find the centroid, or average position, of the star pattern
                     pattern_centroid = np.mean(pattern_vectors, axis=0)
                     # calculate each star's radius, or Euclidean distance from the centroid
@@ -1211,25 +1235,11 @@ class Tetra3():
                         # use the radii to uniquely order the catalog vectors
                         catalog_sorted_vectors = catalog_vectors[np.argsort(catalog_radii)]
 
-                    # calculate the least-squares rotation matrix from catalog to image frame
-                    def find_rotation_matrix(image_vectors, catalog_vectors):
-                        # find the covariance matrix H between the image and catalog vectors
-                        H = np.dot(image_vectors.T, catalog_vectors)
-                        # use singular value decomposition to find the rotation matrix
-                        (U, S, V) = np.linalg.svd(H)
-                        rotation_matrix = np.dot(U, V)
-                        # DON'T DO THIS TO SUPPORT MIRRORED IMAGES! Could make some other matches fail
-                        # if the order of vectors is not correct?
-                        # correct reflection matrix if determinant is -1 instead of 1
-                        # by flipping the sign of the third column of the rotation matrix
-                        #rotation_matrix[:, 2] *= np.linalg.det(rotation_matrix)
-                        return rotation_matrix
-
                     # Use the pattern match to find an estimate for the image's rotation matrix
-                    rotation_matrix = find_rotation_matrix(pattern_sorted_vectors,
-                                                           catalog_sorted_vectors)
+                    rotation_matrix = _find_rotation_matrix(pattern_sorted_vectors,
+                                                            catalog_sorted_vectors)
                     # calculate all star vectors using the new field-of-view
-                    all_star_vectors = compute_vectors(star_centroids, fov)
+                    all_star_vectors = _compute_vectors(star_centroids, (height, width), fov)
                     rotated_star_vectors = np.dot(rotation_matrix.T, all_star_vectors.T).T
                     # Find all star vectors inside the (diagonal) field of view for matching
                     image_center_vector = rotation_matrix[0, :]
@@ -1279,7 +1289,7 @@ class Tetra3():
                         self._logger.debug("Prob: %.4g, corr: %.4g"
                             % (prob_mismatch, prob_mismatch*num_patterns))
                         # if a match has been found, recompute rotation with all matched vectors
-                        rotation_matrix = find_rotation_matrix(match_array[0, :, :], match_array[1, :, :])
+                        rotation_matrix = _find_rotation_matrix(match_array[0, :, :], match_array[1, :, :])
 
                         # Next, compare the angles between all vectors to correct the FOV
                         angles_camera = 2 * np.arcsin(0.5 * pdist(match_array[0, :, :]))
@@ -1288,7 +1298,7 @@ class Tetra3():
 
                         # Find our final matched vectors with fresh FOV and rotation matrix
                         final_match_vectors = all_star_vectors = \
-                            compute_vectors(star_centroids[matched_stars[:, 0]], fov)
+                            _compute_vectors(star_centroids[matched_stars[:, 0]], (height, width), fov)
                         final_match_vectors = np.dot(rotation_matrix.T, final_match_vectors.T).T
 
                         # Calculate residual angles with more accurate formula
@@ -1312,7 +1322,7 @@ class Tetra3():
                         if target_pixel is not None:
                             self._logger.debug('Calculate RA/Dec for targets: '
                                 + str(target_pixel))
-                            target_vectors = compute_vectors(target_pixel, fov)
+                            target_vectors = _compute_vectors(target_pixel, (height, width), fov)
                             rotated_target_vectors = np.dot(rotation_matrix.T, target_vectors.T).T
                             target_ra = np.rad2deg(np.arctan2(rotated_target_vectors[:,1],
                                                               rotated_target_vectors[:,0])) % 360
