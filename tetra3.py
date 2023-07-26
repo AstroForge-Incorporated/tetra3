@@ -96,7 +96,7 @@ from datetime import datetime
 
 # External imports:
 import numpy as np
-from numpy.linalg import norm
+from numpy.linalg import norm, lstsq
 import scipy.ndimage
 import scipy.optimize
 import scipy.stats
@@ -177,6 +177,25 @@ def _compute_vectors(centroids, size, fov):
     star_vectors = star_vectors / norm(star_vectors, axis=1)[:, None]
     return star_vectors
 
+def _compute_centroids(vectors, size, fov, trim=True):
+    """Get (undistorted) centroids from a set of (derotated) unit vectors
+    vectors: Nx3 of (i,j,k) where i is boresight, j is x (horizontal)
+    size: (height, width) in pixels.
+    fov: horizontal field of view in radians.
+    trim: only keep ones within the field of view, also returns list of indices kept
+    """
+    (height, width) = size[:2]
+    scale_factor = -width/2/np.tan(fov/2)
+    centroids = scale_factor*vectors[:, 2:0:-1]/vectors[:, [0]]
+    centroids += [height/2, width/2]
+    if not trim:
+        return centroids
+    else:
+        keep = np.flatnonzero(np.logical_and(
+            np.all(centroids > [0, 0], axis=1),
+            np.all(centroids < [height, width], axis=1)))
+        return (centroids[keep, :], keep)
+
 def _undistort_centroids(centroids, size, k):
     """Apply r_u = r_d(1 - k'*r_d^2) undistortion, where k'=k/100*(2/width)^2,
     i.e. k is in % and that distortion applies width/2 away from the centre.
@@ -203,6 +222,22 @@ def _find_rotation_matrix(image_vectors, catalog_vectors):
     # use singular value decomposition to find the rotation matrix
     (U, S, V) = np.linalg.svd(H)
     return np.dot(U, V)
+
+def _find_centroid_matches(image_centroids, catalog_centroids, r):
+    """Find matching pairs, unique and within radius r
+    image_centroids: Nx2 (y, x) in pixels
+    catalog_centroids: Mx2 (y, x) in pixels
+    r: radius in pixels
+
+    returns Kx2 list of matches, first colum is index in image_centroids,
+        second column is index in catalog_centroids
+    """
+    dists = cdist(image_centroids, catalog_centroids)
+    matches = np.argwhere(dists < r)
+    # Make sure we only have unique 1-1 matches
+    matches = matches[np.unique(matches[:, 0], return_index=True)[1], :]
+    matches = matches[np.unique(matches[:, 1], return_index=True)[1], :]
+    return matches
 
 class Tetra3():
     """Solve star patterns and manage databases.
@@ -1244,33 +1279,27 @@ class Tetra3():
                     # Find all star vectors inside the (diagonal) field of view for matching
                     image_center_vector = rotation_matrix[0, :]
                     fov_diagonal_rad = fov * np.sqrt(width**2 + height**2) / width
-                    # Get (at most) the number of verification stars expected
-                    nearby_star_inds = self._get_nearby_stars(image_center_vector, fov_diagonal_rad/2)[:num_stars]
+                    nearby_star_inds = self._get_nearby_stars(image_center_vector, fov_diagonal_rad/2)
                     nearby_star_vectors = self.star_table[nearby_star_inds, 2:5]
-                    # Match the nearby star vectors to the proposed measured star vectors
-                    # Each row is a rotated star vector, each column is a nearby star to match with
-                    dists = cdist(rotated_star_vectors, nearby_star_vectors)
-                    # Maximum distance for match
-                    match_th = match_radius * fov
-                    # First col is rotated vector, second col is catalogue vector
-                    matched_stars = np.argwhere(dists < match_th)
-                    # Make sure we only have unique 1-1 matches
-                    matched_stars = matched_stars[np.unique(matched_stars[:, 0], return_index=True)[1], :]
-                    matched_stars = matched_stars[np.unique(matched_stars[:, 1], return_index=True)[1], :]                
 
+                    # Derotate nearby stars and get their (undistorted) centroids
+                    nearby_star_vectors_derot = np.dot(rotation_matrix, nearby_star_vectors.T).T
+                    (nearby_star_centroids, kept) = _compute_centroids(nearby_star_vectors_derot, (height, width), fov)
+                    nearby_star_vectors = nearby_star_vectors[kept, :]
+                    nearby_star_inds = nearby_star_inds[kept]
+                    matched_stars = _find_centroid_matches(star_centroids, nearby_star_centroids, width*match_radius)
                     # Summary of matches
-                    num_extracted_stars = len(all_star_vectors)
-                    num_nearby_catalog_stars = len(nearby_star_vectors)
-                    num_star_matches = matched_stars.shape[0]
+                    num_extracted_stars = len(star_centroids)
+                    num_nearby_catalog_stars = len(nearby_star_centroids)
+                    num_star_matches = len(matched_stars)
+
+                    # Extract the sets of vectors
+                    matched_image_vectors = _compute_vectors(star_centroids[matched_stars[:, 0], :],
+                        (height, width), fov)
+                    matched_catalog_vectors = nearby_star_vectors[matched_stars[:, 1], :]
+
                     self._logger.debug("Number of nearby stars: %d, total matched: %d" \
                         % (num_nearby_catalog_stars, num_star_matches))
-
-                    # Match array holds all the pairs of good matches
-                    # [0, :, :] is Nx3 of centroid vectors (not rotated)
-                    # [1, :, :] is Nx3 of catalogue vectors
-                    match_array = np.zeros((2, num_star_matches, 3))
-                    match_array[0, :, :] = all_star_vectors[matched_stars[:, 0], :]
-                    match_array[1, :, :] = nearby_star_vectors[matched_stars[:, 1], :]
                     
                     # Probability that a single star is a mismatch (fraction of area that are stars)
                     prob_single_star_mismatch = num_nearby_catalog_stars * match_radius**2
@@ -1282,27 +1311,46 @@ class Tetra3():
                     self._logger.debug("Mismatch probability = %.2e, at FOV = %.5fdeg" \
                         % (prob_mismatch, np.rad2deg(fov)))
                     if prob_mismatch < match_threshold:
-                        # Solved in this time
-                        t_solve = (precision_timestamp() - t0_solve)*1000
                         # diplay mismatch probability in scientific notation
                         self._logger.debug("MATCH ACCEPTED")
                         self._logger.debug("Prob: %.4g, corr: %.4g"
                             % (prob_mismatch, prob_mismatch*num_patterns))
                         # if a match has been found, recompute rotation with all matched vectors
-                        rotation_matrix = _find_rotation_matrix(match_array[0, :, :], match_array[1, :, :])
+                        rotation_matrix = _find_rotation_matrix(matched_image_vectors, matched_catalog_vectors)
 
-                        # Next, compare the angles between all vectors to correct the FOV
-                        angles_camera = 2 * np.arcsin(0.5 * pdist(match_array[0, :, :]))
-                        angles_catalogue = 2 * np.arcsin(0.5 * pdist(match_array[1, :, :]))
-                        fov *= np.mean(angles_catalogue / angles_camera)
+                        # Get the tangent of the angle from image centre for all matches
+                        matched_vectors_derotated = np.dot(rotation_matrix, matched_catalog_vectors.T).T
+                        tan_ang_matched_vectors = norm(matched_vectors_derotated[:,1:], axis=1) \
+                                                    / matched_vectors_derotated[:,0]
+                        # Get the (distorted) pixel distance from image centre for all matches
+                        # (scaled relative to width/2)
+                        rd_matched_centroids = norm(star_centroids[matched_stars[:, 0]] 
+                                                    - [height/2, width/2], axis=1)/width*2
+                        # Solve system of equations in RMS sense for focal length f and distortion k
+                        # where f is focal length in units of image width/2
+                        # and k is distortion in % at width/2 (negative is barrel)
+                        A = np.hstack((tan_ang_matched_vectors[:, None], 
+                                       rd_matched_centroids[:, None]**3/100))
+                        b = rd_matched_centroids[:, None]
+                        (f, k) = lstsq(A, b, rcond=None)[0].flatten()
+                        # Calculate (horizontal) true field of view, and what it
+                        # will be when the centroids are undistorted
+                        fov = 2*np.arctan((1 - k/100)/f)
+                        fov_undistorted = 2*np.arctan(1/f)
 
-                        # Find our final matched vectors with fresh FOV and rotation matrix
-                        final_match_vectors = all_star_vectors = \
-                            _compute_vectors(star_centroids[matched_stars[:, 0]], (height, width), fov)
+                        # Now correct centroids with fov and distortion
+                        matched_centroids = star_centroids[matched_stars[:, 0], :]
+                        # Undistort
+                        matched_centroids = _undistort_centroids(matched_centroids,
+                            (height, width), k)
+                        # Get vectors
+                        final_match_vectors = _compute_vectors(matched_centroids,
+                            (height, width), fov_undistorted)
+                        # Rotate to the sky
                         final_match_vectors = np.dot(rotation_matrix.T, final_match_vectors.T).T
 
                         # Calculate residual angles with more accurate formula
-                        distance = norm(final_match_vectors - match_array[1, :, :], axis=1)
+                        distance = norm(final_match_vectors - matched_catalog_vectors, axis=1)
                         angle = 2 * np.arcsin(.5 * distance)
                         residual = np.rad2deg(np.sqrt(np.mean(angle**2))) * 3600
                         # extract right ascension, declination, and roll from rotation matrix
@@ -1312,8 +1360,11 @@ class Tetra3():
                                                     norm(rotation_matrix[1:3, 2])))
                         roll = np.rad2deg(np.arctan2(rotation_matrix[1, 2],
                                                      rotation_matrix[2, 2])) % 360
+                        # Solved in this time
+                        t_solve = (precision_timestamp() - t0_solve)*1000
                         solution_dict = {'RA': ra, 'Dec': dec, 'Roll': roll,
-                                         'FOV': np.rad2deg(fov), 'RMSE': residual,
+                                         'FOV': np.rad2deg(fov), 'distortion': k,
+                                         'RMSE': residual,
                                          'Matches': num_star_matches,
                                          'Prob': prob_mismatch*num_patterns,
                                          'T_solve': t_solve}
@@ -1322,8 +1373,11 @@ class Tetra3():
                         if target_pixel is not None:
                             self._logger.debug('Calculate RA/Dec for targets: '
                                 + str(target_pixel))
+                            # Calculate the vector in the sky of the target pixel(s)
+                            target_pixel = _undistort_centroids(target_pixel, (height, width), k)
                             target_vectors = _compute_vectors(target_pixel, (height, width), fov)
                             rotated_target_vectors = np.dot(rotation_matrix.T, target_vectors.T).T
+                            # Calculate and add RA/Dec to solution
                             target_ra = np.rad2deg(np.arctan2(rotated_target_vectors[:,1],
                                                               rotated_target_vectors[:,0])) % 360
                             target_dec = 90 - np.rad2deg(
