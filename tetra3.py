@@ -198,18 +198,18 @@ def _compute_centroids(vectors, size, fov, trim=True):
         return (centroids[keep, :], keep)
 
 def _undistort_centroids(centroids, size, k):
-    """Apply r_u = r_d(1 - k'*r_d^2) undistortion, where k'=k/100*(2/width)^2,
-    i.e. k is in % and that distortion applies width/2 away from the centre.
+    """Apply r_u = r_d(1 - k'*r_d^2) undistortion, where k'=k*(2/width)^2,
+    i.e. k is the distortion that applies width/2 away from the centre.
     centroids: Nx2 pixel coordinates (y, x), (0.5, 0.5) top left pixel centre.
     size: (height, width) in pixels.
-    k: % distortion, negative is barrel, positive is pincushion
+    k: distortion, negative is barrel, positive is pincushion
     """
     centroids = np.array(centroids, dtype=np.float32)
     (height, width) = size[:2]
     # Centre
     centroids -= [height/2, width/2]
     # Scale
-    scale = 1 - k/100*(norm(centroids, axis=1)/width*2)**2
+    scale = 1 - k*(norm(centroids, axis=1)/width*2)**2
     centroids *= scale[:, None]
     # Decentre
     centroids += [height/2, width/2]
@@ -1011,6 +1011,7 @@ class Tetra3():
                 - 'Dec': Declination of centre of image in degrees.
                 - 'Roll': Rotation of image relative to north celestial pole.
                 - 'FOV': Calculated field of view of the provided image.
+                - 'distortion': Calculated distortion of the provided image.
                 - 'RMSE': RMS residual of matched stars in arcseconds.
                 - 'Matches': Number of stars in the image matched to the database.
                 - 'Prob': Probability that the solution is a false-positive.
@@ -1108,6 +1109,7 @@ class Tetra3():
                 - 'Dec': Declination of centre of image in degrees.
                 - 'Roll': Rotation of image relative to north celestial pole.
                 - 'FOV': Calculated field of view of the provided image.
+                - 'distortion': Calculated distortion of the provided image.
                 - 'RMSE': RMS residual of matched stars in arcseconds.
                 - 'Matches': Number of stars in the image matched to the database.
                 - 'Prob': Probability that the solution is a false-positive.
@@ -1336,16 +1338,16 @@ class Tetra3():
                                                              - [height/2, width/2], axis=1)/width*2
                         # Solve system of equations in RMS sense for focal length f and distortion k
                         # where f is focal length in units of image width/2
-                        # and k is distortion in % at width/2 (negative is barrel)
-                        # undistorted = distorted*(1 - k^2/100*(distorted*2/width)^2)
+                        # and k is distortion at width/2 (negative is barrel)
+                        # undistorted = distorted*(1 - k*(distorted*2/width)^2)
                         A = np.hstack((tangent_matched_catalog_vectors[:, None],
-                                       radius_matched_image_centroids[:, None]**3/100))
+                                       radius_matched_image_centroids[:, None]**3))
                         b = radius_matched_image_centroids[:, None]
                         (f, k) = lstsq(A, b, rcond=None)[0].flatten()
                         self._logger.debug('Calculated focal length to %.2f and distortion to %.3f' % (f, k))
                         # Calculate (horizontal) true field of view, and what it
                         # will be when the centroids are undistorted
-                        fov = 2*np.arctan((1 - k/100)/f)
+                        fov = 2*np.arctan((1 - k)/f)
                         fov_undistorted = 2*np.arctan(1/f)
 
                         # Now correct centroids with fov and distortion
