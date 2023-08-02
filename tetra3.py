@@ -198,7 +198,7 @@ def _compute_centroids(vectors, size, fov, trim=True):
         return (centroids[keep, :], keep)
 
 def _undistort_centroids(centroids, size, k):
-    """Apply r_u = r_d(1 - k'*r_d^2) undistortion, where k'=k*(2/width)^2,
+    """Apply r_u = r_d(1 - k'*r_d^2)/(1 - k) undistortion, where k'=k*(2/width)^2,
     i.e. k is the distortion that applies width/2 away from the centre.
     centroids: Nx2 pixel coordinates (y, x), (0.5, 0.5) top left pixel centre.
     size: (height, width) in pixels.
@@ -209,9 +209,37 @@ def _undistort_centroids(centroids, size, k):
     # Centre
     centroids -= [height/2, width/2]
     # Scale
-    scale = 1 - k*(norm(centroids, axis=1)/width*2)**2
+    scale = (1 - k*(norm(centroids, axis=1)/width*2)**2)/(1 - k)
     centroids *= scale[:, None]
     # Decentre
+    centroids += [height/2, width/2]
+    return centroids
+
+def _distort_centroids(centroids, size, k, tol=1e-6, maxiter=30):
+    """Distort centroids corresponding to r_u = r_d(1 - k'*r_d^2)/(1 - k),
+    where k'=k*(2/width)^2 i.e. k is the distortion that applies
+    width/2 away from the centre.
+
+    Iterates with Newton-Raphson until the step is smaller than tol
+    or maxiter iterations have been exhausted.
+    """
+    centroids = np.array(centroids, dtype=np.float32)
+    (height, width) = size[:2]
+    # Centre
+    centroids -= [height/2, width/2]
+    r_undist = norm(centroids, axis=1)/width*2
+    # Initial guess, distorted are the same positon
+    r_dist = r_undist.copy()
+    for i in range(maxiter):
+        r_undist_est = r_dist*(1 - k*r_dist**2)/(1 - k)
+        dru_drd = (1 - 3*k*r_dist**2)/(1 - k)
+        error = r_undist - r_undist_est
+        r_dist += error/dru_drd
+
+        if np.all(np.abs(error) < tol):
+            break
+
+    centroids *= (r_dist/r_undist)[:, None]
     centroids += [height/2, width/2]
     return centroids
 
@@ -1344,11 +1372,11 @@ class Tetra3():
                                        radius_matched_image_centroids[:, None]**3))
                         b = radius_matched_image_centroids[:, None]
                         (f, k) = lstsq(A, b, rcond=None)[0].flatten()
+                        # Correct focal length to be at horizontal FOV
+                        f = f/(1 - k)
                         self._logger.debug('Calculated focal length to %.2f and distortion to %.3f' % (f, k))
-                        # Calculate (horizontal) true field of view, and what it
-                        # will be when the centroids are undistorted
-                        fov = 2*np.arctan((1 - k)/f)
-                        fov_undistorted = 2*np.arctan(1/f)
+                        # Calculate (horizontal) true field of view
+                        fov = 2*np.arctan(1/f)
 
                         # Now correct centroids with fov and distortion
                         matched_image_centroids = image_centroids[matched_stars[:, 0], :]
@@ -1357,7 +1385,7 @@ class Tetra3():
                             matched_image_centroids, (height, width), k)
                         # Get vectors
                         final_match_vectors = _compute_vectors(
-                            matched_image_centroids_undist, (height, width), fov_undistorted)
+                            matched_image_centroids_undist, (height, width), fov)
                         # Rotate to the sky
                         final_match_vectors = np.dot(rotation_matrix.T, final_match_vectors.T).T
 
@@ -1382,7 +1410,7 @@ class Tetra3():
                             # Calculate the vector in the sky of the target pixel(s)
                             target_pixel = _undistort_centroids(target_pixel, (height, width), k)
                             target_vectors = _compute_vectors(
-                                target_pixel, (height, width), fov_undistorted)
+                                target_pixel, (height, width), fov)
                             rotated_target_vectors = np.dot(rotation_matrix.T, target_vectors.T).T
                             # Calculate and add RA/Dec to solution
                             target_ra = np.rad2deg(np.arctan2(rotated_target_vectors[:, 1],
