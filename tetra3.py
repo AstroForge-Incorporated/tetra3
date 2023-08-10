@@ -1161,10 +1161,10 @@ class Tetra3():
         """
         assert self.has_database, 'No database loaded'
         self._logger.debug('Got solve from centroids with input: '
-                           + str(len(star_centroids), size, fov_estimate, fov_max_error,
+                           + str((len(star_centroids), size, fov_estimate, fov_max_error,
                                  pattern_checking_stars, match_radius, match_threshold,
                                  solve_timeout, target_pixel, distortion,
-                                 return_matches, return_visual))
+                                 return_matches, return_visual)))
 
         image_centroids = np.asarray(star_centroids)
         if fov_estimate is None:
