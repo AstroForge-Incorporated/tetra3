@@ -1413,6 +1413,10 @@ class Tetra3():
                     (nearby_star_centroids, kept) = _compute_centroids(nearby_star_vectors_derot, (height, width), fov)
                     nearby_star_vectors = nearby_star_vectors[kept, :]
                     nearby_star_inds = nearby_star_inds[kept]
+                    # Only keep as many as the centroids, they should ideally both be the num_stars brightest
+                    nearby_star_centroids = nearby_star_centroids[:len(image_centroids)]
+                    nearby_star_vectors = nearby_star_vectors[:len(image_centroids)]
+                    nearby_star_inds = nearby_star_inds[:len(image_centroids)]
 
                     # Match these centroids to the image
                     matched_stars = _find_centroid_matches(image_centroids_undist, nearby_star_centroids, width*match_radius)
