@@ -94,8 +94,6 @@ import itertools
 from time import perf_counter as precision_timestamp
 from datetime import datetime
 from numbers import Number
-from math import ceil
-from random import shuffle
 
 # External imports:
 import numpy as np
@@ -1214,7 +1212,7 @@ class Tetra3():
             # If given range, need to predistort for future calculations
             # Make each step at most 0.1 (10%) distortion
             distortion_range = np.linspace(min(distortion), max(distortion),
-                ceil(round(max(distortion) - min(distortion), 6)*10) + 1)
+                int(np.ceil(round(max(distortion) - min(distortion), 6)*10) + 1))
             self._logger.debug('Searching distortion range: ' + str(np.round(distortion_range, 6)))
             image_centroids_preundist = np.zeros((len(distortion_range),) + image_centroids.shape)
             for (i, k) in enumerate(distortion_range):
