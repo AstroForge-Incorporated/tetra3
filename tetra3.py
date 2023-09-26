@@ -1051,14 +1051,18 @@ class Tetra3():
         self._logger.debug('Got solve from image with input: ' + str((image, fov_estimate,
             fov_max_error, pattern_checking_stars, match_radius, match_threshold,
             solve_timeout, target_pixel, return_matches, kwargs)))
-        image = np.asarray(image, dtype=np.float32)
-        (height, width) = image.shape[:2]
+        (width, height) = image.size[:2]
         self._logger.debug('Image (height, width): ' + str((height, width)))
 
         # Run star extraction, passing kwargs along
         t0_extract = precision_timestamp()
-        centroids = get_centroids_from_image(image, **kwargs)
+        centr_data = get_centroids_from_image(image, **kwargs)
         t_extract = (precision_timestamp() - t0_extract)*1000
+        # If we get a tuple, need to use only first element and then reassemble at return
+        if isinstance(centr_data, tuple):
+            centroids = centr_data[0]
+        else:
+            centroids = centr_data
         self._logger.debug('Found this many centroids, in time: ' + str((len(centroids), t_extract)))
         # Run centroid solver, passing arguments along (could clean up with kwargs handler)
         solution = self.solve_from_centroids(centroids, (height, width), 
@@ -1069,7 +1073,10 @@ class Tetra3():
             return_matches=return_matches, return_visual=return_visual)
         # Add extraction time to results and return
         solution['T_extract'] = t_extract
-        return solution
+        if isinstance(centr_data, tuple):
+            return (solution,) + centr_data[1:]
+        else:
+            return solution
 
     def solve_from_centroids(self, star_centroids, size, fov_estimate=None, fov_max_error=None,
                              pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3,
