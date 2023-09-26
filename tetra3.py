@@ -991,7 +991,7 @@ class Tetra3():
                 result = t3.solve_from_image(image, **extract_dict)
 
         Args:
-            image (numpy.ndarray): The image to solve for, must be convertible to numpy array.
+            image (PIL.Image): The image to solve for, must be convertible to numpy array.
             fov_estimate (float, optional): Estimated field of view of the image in degrees.
             fov_max_error (float, optional): Maximum difference in field of view from the estimate
                 allowed for a match in degrees.
@@ -1648,16 +1648,17 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
 
     To aid in finding optimal settings pass `return_images=True` to get back a dictionary with
     partial extraction results and tweak the parameters accordingly. The dictionary entry
-    'binary_mask' is the result of the process which identifies stars and is most useful for this.
+    `binary_mask` shows the result of the raw star detection and `final_centroids` labels the
+    centroids in the original image (green for accepted, red for rejected).
 
-    In general, the best extraction is attained with `bg_sub_mode='local_median'` and
-    `sigma_mode='local_median_abs'` with a reasonable (e.g. 7 to 15) size filter. However, this may
-    be slow (especially for larger filter sizes) and requires that the camera readout bit-depth is
-    sufficient to accurately capture the camera noise. A recommendable and much faster alternative
-    is `bg_sub_mode='local_mean'` and `sigma_mode='global_root_square'` with a large (e.g. 15 to 25)
-    sized filter, which is the default. You may elect to do background subtraction and image
-    thresholding by your own methods, then pass `bg_sub_mode=None` and your threshold as `image_th`
-    to bypass these extraction steps.
+    Technically, the best extraction is attained with `bg_sub_mode='local_median'` and
+    `sigma_mode='local_median_abs'` with a reasonable (e.g. 15) size filter and a very sharp image.
+    However, this may be slow (especially for larger filter sizes) and requires that the camera
+    readout bit-depth is sufficient to accurately capture the camera noise. A recommendable and
+    much faster alternative is `bg_sub_mode='local_mean'` and `sigma_mode='global_root_square'`
+    with a larger (e.g. 25 or more) sized filter, which is the default. You may elect to do
+    background subtraction and image thresholding by your own methods, then pass `bg_sub_mode=None`
+    and your threshold as `image_th` to bypass these extraction steps.
 
     The algorithm proceeds as follows:
         1. Convert image to 2D numpy.ndarray with type float32.
@@ -1700,7 +1701,7 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
             positions to correspond to pixels in the original image.
 
     Args:
-        image (numpy.ndarray): Image to find centroids in.
+        image (PIL.Image): Image to find centroids in.
         sigma (float, optional): The number of noise standard deviations to threshold at.
             Default 2.
         image_th (float, optional): The value to threshold the image at. If supplied `sigma` and
@@ -1739,10 +1740,16 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
             is returned with: (N,2) centroid positions, N sum, N area, (N,3) xx yy and xy second
             moments, N major over minor axis ratio. If `return_images=True` a tuple is returned
             with the results as defined previously and a dictionary with images and data of partial
-            results.
+            results. The keys are: `converted_input`: The input after conversion to a mono float
+            numpy array. `cropped_and_downsampled`: The image after cropping and downsampling.
+            `removed_background`: The image after background subtraction. `binary_mask`: The
+            thresholded image where raw stars are detected (after binary opening).
+            `final_centroids`: The original image annotated with green circles for the extracted
+            centroids, and red circles for any centroids that were rejected.
     """
 
     # 1. Ensure image is float np array and 2D:
+    raw_image = image.copy()
     image = np.asarray(image, dtype=np.float32)
     if image.ndim == 3:
         assert image.shape[2] in (1, 3), 'Colour image must have 1 or 3 colour channels'
@@ -1810,8 +1817,8 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
             raise AssertionError('sigma_mode must be string: local_median_abs, local_root_square,'
                                  + ' global_median_abs, or global_root_square')
         image_th = img_std * sigma
-    if return_images:
-        images_dict['image_threshold'] = image_th
+    #if return_images:
+    #    images_dict['image_threshold'] = image_th
     # 5. Threshold to find binary mask
     bin_mask = image > image_th
     if binary_open:
@@ -1821,8 +1828,8 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
     # 6. Label each region in the binary mask
     (labels, num_labels) = scipy.ndimage.label(bin_mask)
     index = np.arange(1, num_labels + 1)
-    if return_images:
-        images_dict['labelled_regions'] = labels
+    #if return_images:
+    #    images_dict['labelled_regions'] = labels
     if num_labels < 1:
         # Found nothing in binary image, return empty.
         if return_moments and return_images:
@@ -1844,22 +1851,25 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
         - Variance xx, yy, xy (second moment)
         - Area (pixels)
         - Major axis/minor axis ratio
+        First variable will be NAN if failed any of the checks
         """
         (y, x) = (np.unravel_index(p, (height, width)))
         area = len(a)
-        if min_area and area < min_area:
-            return (np.nan,)*8
-        if max_area and area > max_area:
-            return (np.nan,)*8
         centroid = np.sum([a, x*a, y*a], axis=-1)
         m0 = centroid[0]
-        if min_sum and m0 < min_sum:
-            return (np.nan,)*8
-        if max_sum and m0 > max_sum:
-            return (np.nan,)*8
         centroid[1:] = centroid[1:] / m0
         m1_x = centroid[1]
         m1_y = centroid[2]
+        # Check basic filtering
+        if min_area and area < min_area:
+            return (np.nan, m1_y+.5, m1_x+.5, np.nan, np.nan, np.nan, np.nan, np.nan)
+        if max_area and area > max_area:
+            return (np.nan, m1_y+.5, m1_x+.5, np.nan, np.nan, np.nan, np.nan, np.nan)
+        if min_sum and m0 < min_sum:
+            return (np.nan, m1_y+.5, m1_x+.5, np.nan, np.nan, np.nan, np.nan, np.nan)
+        if max_sum and m0 > max_sum:
+            return (np.nan, m1_y+.5, m1_x+.5, np.nan, np.nan, np.nan, np.nan, np.nan)
+        # If higher order data is requested or used for filtering, calculate.
         if return_moments or max_axis_ratio is not None:
             # Need to calculate second order data about the regions, firstly the moments
             # then use that to get major/minor axes.
@@ -1869,10 +1879,10 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
             major = np.sqrt(2 * (m2_xx + m2_yy + np.sqrt((m2_xx - m2_yy)**2 + 4 * m2_xy**2)))
             minor = np.sqrt(2 * max(0, m2_xx + m2_yy - np.sqrt((m2_xx - m2_yy)**2 + 4 * m2_xy**2)))
             if max_axis_ratio and minor <= 0:
-                return (np.nan,)*8
+                return (np.nan, m1_y+.5, m1_x+.5, np.nan, np.nan, np.nan, np.nan, np.nan)
             axis_ratio = major / max(minor, .000000001)
             if max_axis_ratio and axis_ratio > max_axis_ratio:
-                return (np.nan,)*8
+                return (np.nan, m1_y+.5, m1_x+.5, np.nan, np.nan, np.nan, np.nan, np.nan)
             return (m0, m1_y+.5, m1_x+.5, m2_xx, m2_yy, m2_xy, area, axis_ratio)
         else:
             return (m0, m1_y+.5, m1_x+.5, np.nan, np.nan, np.nan, area, np.nan)
@@ -1881,8 +1891,43 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
                                               pass_positions=True)
     valid = ~np.isnan(tmp[:, 0])
     extracted = tmp[valid, :]
+    rejected = tmp[~valid, :]
     if return_images:
-        images_dict['label_statistics'] = bin_mask.copy()
+        # Convert 16-bit to 8-bit:
+        if raw_image.mode == 'I;16':
+            tmp = np.array(raw_image, dtype=np.uint16)
+            tmp //= 256
+            tmp = tmp.astype(np.uint8)
+            raw_image = Image.fromarray(tmp)
+        # Convert mono to RGB
+        if raw_image.mode != 'RGB':
+            raw_image = raw_image.convert('RGB')
+        # Draw green circles for kept centroids, red for rejected
+        img_draw = ImageDraw.Draw(raw_image)
+        def draw_circle(centre, radius, **kwargs):
+            bbox = [centre[1] - radius,
+                    centre[0] - radius,
+                    centre[1] + radius,
+                    centre[0] + radius]
+            img_draw.ellipse(bbox, **kwargs)
+        for entry in extracted:
+            pos = entry[1:3].copy()
+            size = .01*width
+            if downsample is not None:
+                pos *= downsample
+                pos += [offs_h, offs_w]
+                size *= downsample
+            draw_circle(pos, size, outline='green')
+        for entry in rejected:
+            pos = entry[1:3].copy()
+            size = .01*width
+            if downsample is not None:
+                pos *= downsample
+                pos += [offs_h, offs_w]
+                size *= downsample
+            draw_circle(pos, size, outline='red')
+        images_dict['final_centroids'] = raw_image
+
     # 8. Sort
     order = (-extracted[:, 0]).argsort()
     if max_returned:
