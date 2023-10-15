@@ -271,21 +271,17 @@ class Tetra3():
         ::
 
             import tetra3
-            # Create instance
+            # Create instance, automatically loads the default database
             t3 = tetra3.Tetra3()
-            # Load a database
-            t3.load_database('default_database')
-            # Create dictionary with desired extraction settings
-            extract_dict = {'min_sum': 250, 'max_axis_ratio': 1.5}
-            # Solve for image, optionally passing known FOV estimate and error range
-            result = t3.solve_from_image(image, fov_estimate=11, fov_max_error=.5, **extract_dict)
+            # Solve for image (PIL.Image), with some optional arguments
+            result = t3.solve_from_image(image, fov_estimate=11, fov_max_error=.5, max_area=300)
 
     Example 2: Generate and save database
         ::
 
             import tetra3
-            # Create instance
-            t3 = tetra3.Tetra3()
+            # Create instance without loading any database
+            t3 = tetra3.Tetra3(load_database=None)
             # Generate and save database
             t3.generate_database(max_fov=20, save_as='my_database_name')
 
@@ -294,7 +290,8 @@ class Tetra3():
             :meth:`load_database` with the provided argument after creating instance. Defaults to
             'default_database'. Can set to None to create Tetra3 object without loaded database.
         debug_folder (pathlib.Path, optional): The folder for debug logging. If None (the default)
-            the folder tetra3/debug will be used/created.
+            debug logging will be disabled unless handlers have been added to the `tetra3.Tetra3`
+            logger before creating the insance.
 
     """
     def __init__(self, load_database='default_database', debug_folder=None):
