@@ -1,22 +1,27 @@
 """
-This example loads the tetra3 default database and solves for every image in the tetra3/test_data directory.
-
-Note: Requires PIL (pip install Pillow)
+This example loads the tetra3 default database and solves for every image in the
+tetra3/examples/data directory.
 """
-import sys
 from PIL import Image
 from pathlib import Path
 EXAMPLES_DIR = Path(__file__).parent
-sys.path.append(str(EXAMPLES_DIR.parent))
-from tetra3 import Tetra3
 
-# Create instance and load default_database (built with max_fov=12 and the rest as default)
-t3 = Tetra3('default_database')
+import tetra3
+
+# Create instance and load the default database, built for 30 to 10 degree field of view.
+# Pass `load_database=None` to not load a database, or to load your own.
+t3 = tetra3.Tetra3()
 
 # Path where images are
 path = EXAMPLES_DIR / 'data'
-for impath in path.glob('*.tiff'):
+for impath in path.glob('*'):
     print('Solving for image at: ' + str(impath))
     with Image.open(str(impath)) as img:
-        solved = t3.solve_from_image(img)  # Adding e.g. fov_estimate=11.4, fov_max_error=.1 improves performance
-    print('Solution: ' + str(solved))
+        # Here you can add e.g. `fov_estimate`/`fov_max_error` to improve speed or a
+        # `distortion` range to search (default assumes undistorted image). There
+        # are many optional returns, e.g. `return_matches` or `return_visual`. A core
+        # aspect of the solution is centroiding (detecting the stars in the image).
+        # You can use `return_images` to get a second return value to check the
+        # centroiding process, the key `final_centroids` is especially useful.
+        solution = t3.solve_from_image(img, distortion=[-.2, .1])
+    print('Solution: ' + str(solution))

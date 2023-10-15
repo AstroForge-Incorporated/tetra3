@@ -386,12 +386,12 @@ class Tetra3():
         """numpy.ndarray: Table of catalogue IDs for each entry in the star table.
 
         The table takes different format depending on the source catalogue used
-        to build the database. See Tetra3.database_properties['star_catalog'] to
-        find the source catalogue.
-        - bsc5: A numpy array of size (N,) with datatype uint16. Stores the 'BSC' number.
-        - hip_main: A numpy array of size (N,) with datatype uint32. Stores the 'HIP' number.
-        - tyc_main: A numpy array of size (N, 3) with datatype uint16. Stores the
-            (TYC1, TYC2, TYC3) numbers.
+        to build the database. See the `star_catalog` key of
+        :meth:`database_properties` to find the source catalogue.
+            - bsc5: A numpy array of size (N,) with datatype uint16. Stores the 'BSC' number.
+            - hip_main: A numpy array of size (N,) with datatype uint32. Stores the 'HIP' number.
+            - tyc_main: A numpy array of size (N, 3) with datatype uint16. Stores the
+              (TYC1, TYC2, TYC3) numbers.
 
         Is None if no database is loaded or an older database without IDs stored.
         """
@@ -407,21 +407,21 @@ class Tetra3():
             - 'pattern_bins': Number of bins per dimension in pattern catalog.
             - 'pattern_max_error': Maximum difference allowed in pattern for a match.
             - 'max_fov': Maximum camera horizontal field of view (in degrees) the database is built for.
-                This will also be the angular extent of the largest pattern.
+              This will also be the angular extent of the largest pattern.
             - 'min_fov': Minimum camera horizontal field of view (in degrees) the database is built for.
-                This drives the density of stars in the database, patterns may be smaller than this.
+              This drives the density of stars in the database, patterns may be smaller than this.
             - 'pattern_stars_per_fov': Number of stars used for patterns in each region of size
               'min_fov'.
             - 'verification_stars_per_fov': Number of stars in catalog in each region of size 'min_fov'.
             - 'star_max_magnitude': Dimmest apparent magnitude of stars in database.
             - 'star_catalog': Name of the star catalog (e.g. bcs5, hip_main, tyc_main) the database was
-                built from. Returns 'unknown' for old databases where this data was not saved.
+              built from. Returns 'unknown' for old databases where this data was not saved.
             - 'simplify_pattern': Indicates if pattern simplification was used when building the database.
             - 'presort_patterns': Indicates if the pattern indices are sorted by distance to the centroid.
             - 'range_ra': The portion of the sky in right ascension (min, max) that is in the database
-                (degrees 0 to 360). If None, the whole sky is included.
+              (degrees 0 to 360). If None, the whole sky is included.
             - 'range_dec': The portion of the sky in declination (min, max) that is in the database
-                (degrees -90 to 90). If None, the whole sky is included.
+              (degrees -90 to 90). If None, the whole sky is included.
         """
         return self._db_props
 
@@ -1026,21 +1026,21 @@ class Tetra3():
                 - 'T_solve': Time spent searching for a match in milliseconds.
                 - 'T_extract': Time spent exctracting star centroids in milliseconds.
                 - 'RA_target': Right ascension in degrees of the pixel positions passed in
-                    target_pixel. Not included if target_pixel=None (the default).
+                  target_pixel. Not included if target_pixel=None (the default).
                 - 'Dec_target': Declination in degrees of the pixel positions in target_pixel.
-                    Not included if target_pixel=None (the default).
+                  Not included if target_pixel=None (the default).
                 - 'matched_stars': An Mx3 list with the (RA, Dec, magnitude) of the M matched stars
-                    that were used in the solution. RA/Dec in degrees. Not included if
-                    return_matches=False (the default).
+                  that were used in the solution. RA/Dec in degrees. Not included if
+                  return_matches=False (the default).
                 - 'matched_centroids': An Mx2 list with the (y, x) pixel coordinates in the image
-                    corresponding to each matched star. Not included if return_matches=False.
+                  corresponding to each matched star. Not included if return_matches=False.
                 - 'matched_catID': The catalogue ID corresponding to each matched star. See
-                    Tetra3.star_catalog_IDs for information on the format. Not included if
-                    return_matches=False.
+                  Tetra3.star_catalog_IDs for information on the format. Not included if
+                  return_matches=False.
                 - 'visual': A PIL image with spots for the given centroids in white, the coarse
-                    FOV and distortion estimates in orange, the final FOV and distortion
-                    estimates in green. Also has circles for the catalogue stars in green or
-                    red for successful/unsuccessful match. Not included if return_visual=False.
+                  FOV and distortion estimates in orange, the final FOV and distortion
+                  estimates in green. Also has circles for the catalogue stars in green or
+                  red for successful/unsuccessful match. Not included if return_visual=False.
 
                 If unsuccsessful in finding a match, None is returned for all keys of the
                 dictionary except 'T_solve', and the optional return keys are missing.
@@ -1141,23 +1141,23 @@ class Tetra3():
                 - 'Prob': Probability that the solution is a false-positive.
                 - 'T_solve': Time spent searching for a match in milliseconds.
                 - 'RA_target': Right ascension in degrees of the pixel positions passed in
-                    target_pixel. Not included if target_pixel=None (the default). If a Kx2 array
-                    of target_pixel was passed, this will be a length K list.
+                  target_pixel. Not included if target_pixel=None (the default). If a Kx2 array
+                  of target_pixel was passed, this will be a length K list.
                 - 'Dec_target': Declination in degrees of the pixel positions in target_pixel.
-                    Not included if target_pixel=None (the default). If a Kx2 array
-                    of target_pixel was passed, this will be a length K list.
+                  Not included if target_pixel=None (the default). If a Kx2 array
+                  of target_pixel was passed, this will be a length K list.
                 - 'matched_stars': An Mx3 list with the (RA, Dec, magnitude) of the M matched stars
-                    that were used in the solution. RA/Dec in degrees. Not included if
-                    return_matches=False (the default).
+                  that were used in the solution. RA/Dec in degrees. Not included if
+                  return_matches=False (the default).
                 - 'matched_centroids': An Mx2 list with the (y, x) pixel coordinates in the image
-                    corresponding to each matched star. Not included if return_matches=False.
+                  corresponding to each matched star. Not included if return_matches=False.
                 - 'matched_catID': The catalogue ID corresponding to each matched star. See
-                    Tetra3.star_catalog_IDs for information on the format. Not included if
-                    return_matches=False.
+                  Tetra3.star_catalog_IDs for information on the format. Not included if
+                  return_matches=False.
                 - 'visual': A PIL image with spots for the given centroids in white, the coarse
-                    FOV and distortion estimates in orange, the final FOV and distortion
-                    estimates in green. Also has circles for the catalogue stars in green or
-                    red for successful/unsuccessful match. Not included if return_visual=False.
+                  FOV and distortion estimates in orange, the final FOV and distortion
+                  estimates in green. Also has circles for the catalogue stars in green or
+                  red for successful/unsuccessful match. Not included if return_visual=False.
 
                 If unsuccsessful in finding a match, None is returned for all keys of the
                 dictionary except 'T_solve', and the optional return keys are missing.
@@ -1738,17 +1738,17 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
 
     Returns:
         numpy.ndarray or tuple: If `return_moments=False` and `return_images=False` (the defaults)
-            an array of shape (N,2) is returned with centroid positions (y down, x right) of the
-            found spots in order of brightness. If `return_moments=True` a tuple of numpy arrays
-            is returned with: (N,2) centroid positions, N sum, N area, (N,3) xx yy and xy second
-            moments, N major over minor axis ratio. If `return_images=True` a tuple is returned
-            with the results as defined previously and a dictionary with images and data of partial
-            results. The keys are: `converted_input`: The input after conversion to a mono float
-            numpy array. `cropped_and_downsampled`: The image after cropping and downsampling.
-            `removed_background`: The image after background subtraction. `binary_mask`: The
-            thresholded image where raw stars are detected (after binary opening).
-            `final_centroids`: The original image annotated with green circles for the extracted
-            centroids, and red circles for any centroids that were rejected.
+        an array of shape (N,2) is returned with centroid positions (y down, x right) of the
+        found spots in order of brightness. If `return_moments=True` a tuple of numpy arrays
+        is returned with: (N,2) centroid positions, N sum, N area, (N,3) xx yy and xy second
+        moments, N major over minor axis ratio. If `return_images=True` a tuple is returned
+        with the results as defined previously and a dictionary with images and data of partial
+        results. The keys are: `converted_input`: The input after conversion to a mono float
+        numpy array. `cropped_and_downsampled`: The image after cropping and downsampling.
+        `removed_background`: The image after background subtraction. `binary_mask`: The
+        thresholded image where raw stars are detected (after binary opening).
+        `final_centroids`: The original image annotated with green circles for the extracted
+        centroids, and red circles for any centroids that were rejected.
     """
 
     # 1. Ensure image is float np array and 2D:
