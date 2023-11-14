@@ -29,7 +29,7 @@ arguments to :meth:`Tetra3.solve_from_image` to use them when solving your image
 Note:
     If you wish to build you own database (typically for a different field-of-view) you must
     download a star catalogue. tetra3 supports three options:
-    
+
     * The 285KB Yale Bright Star Catalog 'BSC5' containing 9,110 stars. This is complete to
       to about magnitude seven and is sufficient for >10 deg field-of-view setups.
     * The 51MB Hipparcos Catalogue 'hip_main' containing 118,218 stars. This contains about
@@ -39,7 +39,7 @@ Note:
     The 'BSC5' data is avaiable from <http://tdc-www.harvard.edu/catalogs/bsc5.html> (use
     byte format file) and 'hip_main' and 'tyc_main' are available from
     <https://cdsarc.u-strasbg.fr/ftp/cats/I/239/> (save the appropriate .dat file). The
-    downloaded catalogue must be placed in the tetra3 directory.
+    downloaded catalogue must be placed in the tetra3/tetra3 directory.
 
 This is Free and Open-Source Software based on `Tetra` rewritten by Gustav Pettersson at ESA.
 
@@ -261,7 +261,7 @@ class Tetra3():
     A database needs to be generated with patterns which are of appropriate scale for the field
     of view (FOV) of your camera. Therefore, generate a database using :meth:`generate_database`
     with a `max_fov` which is the FOV of your camera (or slightly larger). A database with
-    `max_fov=12` (degrees) is included as `default_database.npz`.
+    `max_fov=30` (degrees) is included as `default_database.npz`.
 
     Star locations (centroids) are found using :meth:`tetra3.get_centroids_from_image`, use one of
     your images to find settings which work well for your images. Then pass those settings as
@@ -324,10 +324,10 @@ class Tetra3():
         self._verification_catalog = None
         self._db_props = {'pattern_mode': None, 'pattern_size': None, 'pattern_bins': None,
                           'pattern_max_error': None, 'max_fov': None, 'min_fov': None,
-                          'star_catalog': None, 'pattern_stars_per_fov': None,
-                          'verification_stars_per_fov': None, 'star_max_magnitude': None,
-                          'simplify_pattern': None, 'range_ra': None, 'range_dec': None,
-                          'presort_patterns': None}
+                          'star_catalog': None, 'epoch_equinox': None, 'epoch_proper_motion': None,
+                          'pattern_stars_per_fov': None, 'verification_stars_per_fov': None,
+                          'star_max_magnitude': None, 'simplify_pattern': None,
+                          'range_ra': None, 'range_dec': None, 'presort_patterns': None}
 
         if load_database is not None:
             self._logger.debug('Trying to load database')
@@ -413,6 +413,9 @@ class Tetra3():
             - 'star_max_magnitude': Dimmest apparent magnitude of stars in database.
             - 'star_catalog': Name of the star catalog (e.g. bcs5, hip_main, tyc_main) the database was
               built from. Returns 'unknown' for old databases where this data was not saved.
+            - 'epoch_equinox': Epoch of the 'star_catalog' celestial coordinate system. Usually 2000,
+              but could be 1950 for old Bright Star Catalog versions.
+            - 'epoch_proper_motion': year to which stellar proper motions have been propagated.
             - 'simplify_pattern': Indicates if pattern simplification was used when building the database.
             - 'presort_patterns': Indicates if the pattern indices are sorted by distance to the centroid.
             - 'range_ra': The portion of the sky in right ascension (min, max) that is in the database
@@ -509,6 +512,8 @@ class Tetra3():
                                  self._db_props['max_fov'],
                                  self._db_props['min_fov'],
                                  self._db_props['star_catalog'],
+                                 self._db_props['epoch_equinox'],
+                                 self._db_props['epoch_proper_motion'],
                                  self._db_props['pattern_stars_per_fov'],
                                  self._db_props['verification_stars_per_fov'],
                                  self._db_props['star_max_magnitude'],
@@ -523,6 +528,8 @@ class Tetra3():
                                        ('max_fov', np.float32),
                                        ('min_fov', np.float32),
                                        ('star_catalog', 'U64'),
+                                       ('epoch_equinox', np.uint16),
+                                       ('epoch_proper_motion', np.float32),
                                        ('pattern_stars_per_fov', np.uint16),
                                        ('verification_stars_per_fov', np.uint16),
                                        ('star_max_magnitude', np.float32),
@@ -550,20 +557,20 @@ class Tetra3():
                           pattern_max_error=.005, simplify_pattern=False,
                           range_ra=None, range_dec=None,
                           presort_patterns=True, save_largest_edge=False,
-                          multiscale_step=1.5):
+                          multiscale_step=1.5, epoch_proper_motion='now'):
         """Create a database and optionally save it to file.
-        
+
         Takes a few minutes for a small (large FOV) database, can take many hours for a large (small FOV) database.
         The primary knowledge necessary is the FOV you want the database to work for and the highest magnitude of
         stars you want to include. For a single application, set
-        max_fov equal to your known FOV. Alternatively, set max_fov and min_fov to the range of FOVs you want the 
+        max_fov equal to your known FOV. Alternatively, set max_fov and min_fov to the range of FOVs you want the
         database to be built for. For large difference in max_fov and min_fov, a multiscale database will be built
         where patterns of several different sizes on the sky will be included.
 
         Note:
             If you wish to build you own database you must download a star catalogue. tetra3 supports three options,
             where the 'hip_main' is the default and recommended database to use:
-            
+
             * The 285KB Yale Bright Star Catalog 'BSC5' containing 9,110 stars. This is complete to
               to about magnitude seven and is sufficient for >10 deg field-of-view setups.
             * The 51MB Hipparcos Catalogue 'hip_main' containing 118,218 stars. This contains about
@@ -585,6 +592,27 @@ class Tetra3():
 
         and took 15 minutes to build. If you know your FOV, set max_fov to this value and leave min_fov as None.
 
+        Note on celestial coordinates: The RA/Dec values incorporated into the database are expressed in the
+        same celestial coordinate system as the input catalog. For hip_main and tyc_main this is J2000; for
+        bsc5 this is also J2000 (but could be B1950 for older Bright Star Catalogs). The solve_from_image()
+        function returns its solution's RA/Dec values along with the equinox epoch of the database's catalog.
+
+        Notes on proper motion: star catalogs include stellar proper motion data. This means they give each
+        star's position as of a specified year (1991.25 for hip_main and tyc_main; 2000(?) for bsc5). In
+        addition, for each star, the annual rate of motion in RA/Dec is also given. This allows
+        generate_database() to output a database with stellar positions propagated to the year in which the
+        database was generated (by default; see below). Some stars don't have proper motions in the catalogue
+        and will therefore be excluded from the database, however, you can set epoch_proper_motion=None to
+        disable this propagation and all stars will be included. The field 'epoch_proper_motion' of the
+        database properties identifies the epoch for which the star positions are valid.
+
+        Theoretically, when passing an image to solve_from_image(), the database's epoch_proper_motion should
+        be the same as the time at which the image was taken. In practice, this is generally unimportant
+        because most stars' proper motion is very small. One exception: for very small fields of view (high
+        magnification), even small proper motions can be signficiant. Another exception: when solving
+        historical images. In both cases, you should arrange to use a database built with a
+        epoch_proper_motion similar to the image's vintage.
+
         Args:
             max_fov (float): Maximum angle (in degrees) between stars in the same pattern.
             min_fov (float, optional): Minimum FOV considered when the catalogue density is trimmed to size.
@@ -603,7 +631,7 @@ class Tetra3():
             pattern_max_error (float, optional): Maximum difference allowed in pattern for a match.
                 Default .005.
             simplify_pattern (bool, optional): If set to True, the patterns generated have maximum
-                size of FOV/2 from the centre star, and will be generated much faster. If set to 
+                size of FOV/2 from the centre star, and will be generated much faster. If set to
                 False (the default) the maximum separation of all stars in the pattern is FOV.
             range_ra (tuple, optional): Tuple with the range (min_ra, max_ra) in degrees (0 to 360).
                 If set, only stars within the given right ascension will be kept in the database.
@@ -618,12 +646,17 @@ class Tetra3():
             multiscale_step (float, optional): Determines the largest ratio between subsequent FOVs
                 that is allowed when generating a multiscale database. Defaults to 1.5. If the ratio
                 max_fov/min_fov is less than sqrt(multiscale_step) a single scale database is built.
+            epoch_proper_motion (string or float, optional): Determines the end year to which
+                stellar proper motions are propagated. If 'now' (default), the current year is used.
+                If 'none' or None, star motions are not propagated and this allows catalogue entries
+                without proper motions to be used in the database.
         """
         self._logger.debug('Got generate pattern catalogue with input: '
                            + str((max_fov, min_fov, save_as, star_catalog, pattern_stars_per_fov,
                                   verification_stars_per_fov, star_max_magnitude,
                                   pattern_max_error, simplify_pattern,
-                                  range_ra, range_dec)))
+                                  range_ra, range_dec, presort_patterns, save_largest_edge,
+                                  multiscale_step, epoch_proper_motion)))
 
         assert star_catalog in _supported_databases, 'Star catalogue name must be one of: ' \
              + str(_supported_databases)
@@ -637,27 +670,78 @@ class Tetra3():
         star_max_magnitude = float(star_max_magnitude)
         pattern_size = 4
         pattern_bins = round(1/4/pattern_max_error)
-        current_year = datetime.utcnow().year
         presort_patterns = bool(presort_patterns)
         save_largest_edge = bool(save_largest_edge)
-        
+        if epoch_proper_motion is None or str(epoch_proper_motion).lower() == 'none':
+            epoch_proper_motion = None
+            self._logger.debug('Proper motions will not be considered')
+        elif isinstance(epoch_proper_motion, Number):
+            self._logger.debug('Use proper motion epoch as given')
+        elif str(epoch_proper_motion).lower() == 'now':
+            epoch_proper_motion = datetime.utcnow().year
+            self._logger.debug('Proper motion epoch set to now: ' + str(epoch_proper_motion))
+        else:
+            raise ValueError('epoch_proper_motion value %s is forbidden' % epoch_proper_motion)
+
         catalog_file_full_pathname = Path(__file__).parent / star_catalog
         # Add .dat suffix for hip and tyc if not present
         if star_catalog in ('hip_main', 'tyc_main') and not catalog_file_full_pathname.suffix:
             catalog_file_full_pathname = catalog_file_full_pathname.with_suffix('.dat')
-        
-        assert catalog_file_full_pathname.exists(), 'No star catalogue found at ' +str(     catalog_file_full_pathname)   
-        
+
+        assert catalog_file_full_pathname.exists(), 'No star catalogue found at ' \
+                                                    + str(catalog_file_full_pathname)
+
         # Calculate number of star catalog entries:
         if star_catalog == 'bsc5':
-            header_length = 28
-            num_entries = 9110
+            # See http://tdc-www.harvard.edu/catalogs/catalogsb.html
+            bsc5_header_type = [('STAR0', np.int32), ('STAR1', np.int32),
+                                ('STARN', np.int32), ('STNUM', np.int32),
+                                ('MPROP', np.int32), ('NMAG', np.int32),
+                                ('NBENT', np.int32)]
+            reader = np.fromfile(catalog_file_full_pathname, dtype=bsc5_header_type, count=1)
+            entry = reader[0]
+            num_entries = entry[2]
+            header_length = reader.itemsize
+            if num_entries > 0:
+                epoch_equinox = 1950
+                pm_origin = 1950  # this is an assumption, not specified in bsc5 docs
+            else:
+                num_entries = -num_entries
+                epoch_equinox = 2000
+                pm_origin = 2000  # this is an assumption, not specified in bsc5 docs
+            # Check that the catalogue version has the data we need
+            stnum = entry[3]
+            if stnum != 1:
+                self._logger.warning('Catalogue %s has unexpected "stnum" header value: %s' %
+                                     (star_catalog, stnum))
+            mprop = entry[4]
+            if mprop != 1:
+                self._logger.warning('Catalogue %s has unexpected "mprop" header value: %s' %
+                                     (star_catalog, mprop))
+            nmag = entry[5]
+            if nmag != 1:
+                self._logger.warning('Catalogue %s has unexpected "nmag" header value: %s' %
+                                     (star_catalog, nmag))
+            nbent = entry[6]
+            if nbent != 32:
+                self._logger.warning('Catalogue %s has unexpected "nbent" header value: %s' %
+                                     (star_catalog, nbent))
         elif star_catalog in ('hip_main', 'tyc_main'):
-            header_length = 0
             num_entries = sum(1 for _ in open(catalog_file_full_pathname))
+            epoch_equinox = 2000
+            pm_origin = 1991.25
 
-        self._logger.info('Loading catalogue ' + str(star_catalog) + ' with ' + str(num_entries) \
-             + ' star entries.') 
+        self._logger.info('Loading catalogue %s with %s star entries.' %
+                          (star_catalog, num_entries))
+
+        if epoch_proper_motion is None:
+            # If pm propagation was disabled, set end date to origin
+            epoch_proper_motion = pm_origin
+            self._logger.info('Using catalog RA/Dec %s epoch; not propagating proper motions from %s.' %
+                              (epoch_equinox, pm_origin))
+        else:
+            self._logger.info('Using catalog RA/Dec %s epoch; propagating proper motions from %s to %s.' %
+                              (epoch_equinox, pm_origin, epoch_proper_motion))
 
         # Preallocate star table:
         star_table = np.zeros((num_entries, 6), dtype=np.float32)
@@ -671,41 +755,98 @@ class Tetra3():
 
         # Read magnitude, RA, and Dec from star catalog:
         if star_catalog == 'bsc5':
-            bsc5_data_type = [('ID', np.float32), ('RA1950', np.float64),
-                              ('Dec1950', np.float64), ('type', np.int16),
-                              ('mag', np.int16), ('RA_pm', np.float32), ('Dec_PM', np.float32)]            
+            bsc5_data_type = [('ID', np.float32), ('RA', np.float64),
+                              ('Dec', np.float64), ('type', np.int16),
+                              ('mag', np.int16), ('RA_pm', np.float32), ('Dec_PM', np.float32)]
             with open(catalog_file_full_pathname, 'rb') as star_catalog_file:
                 star_catalog_file.seek(header_length)  # skip header
                 reader = np.fromfile(star_catalog_file, dtype=bsc5_data_type, count=num_entries)
-                for (i, entry) in enumerate(reader):  # star_num in range(num_entries):
-                    mag = entry[4]/100
-                    if mag <= star_max_magnitude:
-                        ra  = entry[1] + entry[5] * (current_year - 1950)
-                        dec = entry[2] + entry[6] * (current_year - 1950)
-                        star_table[i,:] = ([ra, dec, 0, 0, 0, mag])
-                        star_catID[i] = np.uint16(entry[0])
+            for (i, entry) in enumerate(reader):
+                mag = entry[4]/100
+                if mag > star_max_magnitude:
+                    continue
+                # RA/Dec in radians at epoch proper motion start.
+                alpha = float(entry[1])
+                delta = float(entry[2])
+                cos_delta = np.cos(delta)
+
+                # Pick up proper motion terms. See notes for hip_main and tyc_main below.
+                # Radians per year.
+                mu_alpha_cos_delta = float(entry[5])
+                mu_delta = float(entry[6])
+
+                # See notes below.
+                if cos_delta > 0.1:
+                    mu_alpha = mu_alpha_cos_delta / cos_delta
+                else:
+                    mu_alpha = 0
+                    mu_delta = 0
+
+                ra  = alpha + mu_alpha * (epoch_proper_motion - pm_origin)
+                dec = delta + mu_delta * (epoch_proper_motion - pm_origin)
+                star_table[i,:] = ([ra, dec, 0, 0, 0, mag])
+                star_catID[i] = np.uint16(entry[0])
         elif star_catalog in ('hip_main', 'tyc_main'):
-            incomplete_entries = 0
+            # The Hipparcos and Tycho catalogs uses International Celestial
+            # Reference System (ICRS) which is essentially J2000. See
+            # https://cdsarc.u-strasbg.fr/ftp/cats/I/239/version_cd/docs/vol1/sect1_02.pdf
+            # section 1.2.1 for details.
             with open(catalog_file_full_pathname, 'r') as star_catalog_file:
                 reader = csv.reader(star_catalog_file, delimiter='|')
-                for (i, entry) in enumerate(reader):  # star_num in range(num_entries):
-                    # skip this entry if any of the required fields are empty:
-                    if entry[5].isspace() or entry[8].isspace() or entry[9].isspace() or \
-                                            entry[12].isspace() or entry[13].isspace():
-                        incomplete_entries +=1
+                incomplete_entries = 0
+                for (i, entry) in enumerate(reader):
+                    # Skip this entry if mag, ra, or dec are empty.
+                    if entry[5].isspace() or entry[8].isspace() or entry[9].isspace():
+                        incomplete_entries += 1
+                        continue
+                    # If propagating, skip if proper motions are empty.
+                    if epoch_proper_motion != pm_origin \
+                            and (entry[12].isspace() or entry[13].isspace()):
+                        incomplete_entries += 1
                         continue
                     mag = float(entry[5])
-                    if mag is not None and mag <= star_max_magnitude:
-                        pmRA = float(entry[12])/1000/60/60  # convert milliarcseconds per year to degrees per year
-                        ra  = np.deg2rad(float(entry[8]) + pmRA * (current_year - 1991.25))
-                        pmDec = float(entry[13])/1000/60/60  # convert milliarcseconds per year to degrees per year
-                        dec = np.deg2rad(float(entry[9]) + pmDec * (current_year - 1991.25))
-                        star_table[i,:] = ([ra, dec, 0, 0, 0, mag])
-                        # Find ID, depends on the database
-                        if star_catalog == 'hip_main':
-                            star_catID[i] = np.uint32(entry[1])
-                        else: # is hip_main
-                            star_catID[i, :] = [np.uint16(x) for x in entry[1].split()]
+                    if mag > star_max_magnitude:
+                        continue
+                    # RA/Dec in degrees at 1991.25 proper motion start.
+                    alpha = float(entry[8])
+                    delta = float(entry[9])
+                    cos_delta = np.cos(np.deg2rad(delta))
+
+                    mu_alpha = 0
+                    mu_delta = 0
+                    if epoch_proper_motion != pm_origin:
+                        # Pick up proper motion terms. Note that the pmRA field is
+                        # "proper motion in right ascension"; see
+                        # https://en.wikipedia.org/wiki/Proper_motion; see also section
+                        # 1.2.5 in the cdsarc.u-strasbg document cited above.
+
+                        # The 1000/60/60 term converts milliarcseconds per year to
+                        # degrees per year.
+                        mu_alpha_cos_delta = float(entry[12])/1000/60/60
+                        mu_delta = float(entry[13])/1000/60/60
+
+                        # Divide the pmRA field by cos_delta to recover the RA proper
+                        # motion rate. Note however that near the poles (delta near plus
+                        # or minus 90 degrees) the cos_delta term goes to zero so dividing
+                        # by cos_delta is problematic there.
+                        # Section 1.2.9 of the cdsarc.u-strasbg document cited above
+                        # outlines a change of coordinate system that can overcome
+                        # this problem; we simply punt on proper motion near the poles.
+                        if cos_delta > 0.1:
+                            mu_alpha = mu_alpha_cos_delta / cos_delta
+                        else:
+                            # abs(dec) > ~84 degrees. Ignore proper motion.
+                            mu_alpha = 0
+                            mu_delta = 0
+
+                    ra  = np.deg2rad(alpha + mu_alpha * (epoch_proper_motion - pm_origin))
+                    dec = np.deg2rad(delta + mu_delta * (epoch_proper_motion - pm_origin))
+                    star_table[i,:] = ([ra, dec, 0, 0, 0, mag])
+                    # Find ID, depends on the database
+                    if star_catalog == 'hip_main':
+                        star_catID[i] = np.uint32(entry[1])
+                    else: # is tyc_main
+                        star_catID[i, :] = [np.uint16(x) for x in entry[1].split()]
 
                 if incomplete_entries:
                     self._logger.info('Skipped %i incomplete entries.' % incomplete_entries)
@@ -813,7 +954,7 @@ class Tetra3():
                 if not occupied_for_pattern:
                     keep_for_patterns[star_ind] = True
                     keep_at_fov[star_ind] = True
-            
+
             self._logger.info('Stars for patterns at this FOV: ' + str(np.sum(keep_at_fov)) + '.')
             self._logger.info('Stars for patterns total: ' + str(np.sum(keep_for_patterns)) + '.')
             # Clip out table of the kept stars
@@ -890,22 +1031,22 @@ class Tetra3():
         else:
             pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint32)
         self._logger.info('Catalog size ' + str(pattern_catalog.shape) + ' and type ' + str(pattern_catalog.dtype) + '.')
-        
+
         if save_largest_edge:
             pattern_largest_edge = np.zeros(catalog_length, dtype=np.float16)
-            self._logger.info('Storing larges edges as type ' + str(pattern_largest_edge.dtype))
+            self._logger.info('Storing largest edges as type ' + str(pattern_largest_edge.dtype))
 
         # Indices to extract from dot product matrix (above diagonal)
         upper_tri_index = np.triu_indices(pattern_size, 1)
-        
+
         # Go through each pattern and insert to the catalogue
         for (index, pattern) in enumerate(pattern_list):
             if index % 1000000 == 0 and index > 0:
                 self._logger.info('Inserting pattern number: ' + str(index))
-            
+
             # retrieve the vectors of the stars in the pattern
             vectors = star_table[pattern, 2:5]
-            
+
             # implement more accurate angle calculation
             edge_angles_sorted = np.sort(2 * np.arcsin(.5 * pdist(vectors)))
             edge_ratios = edge_angles_sorted[:-1] / edge_angles_sorted[-1]
@@ -921,7 +1062,7 @@ class Tetra3():
                 pattern_radii = cdist(vectors, pattern_centroid[None, :]).flatten()
                 # use the radii to uniquely order the pattern, used for future matching
                 pattern = np.array(pattern)[np.argsort(pattern_radii)]
-            
+
             # use quadratic probing to find an open space in the pattern catalog to insert
             for index in ((hash_index + offset ** 2) % catalog_length
                           for offset in itertools.count()):
@@ -932,7 +1073,7 @@ class Tetra3():
                         # Store as milliradian to better use float16 range
                         pattern_largest_edge[index] = edge_angles_sorted[-1]*1000
                     break
-        
+
         self._logger.info('Finished generating database.')
         self._logger.info('Size of uncompressed star table: %i Bytes.' %star_table.nbytes)
         self._logger.info('Size of uncompressed pattern catalog: %i Bytes.' %pattern_catalog.nbytes)
@@ -949,6 +1090,8 @@ class Tetra3():
         self._db_props['max_fov'] = np.rad2deg(max_fov)
         self._db_props['min_fov'] = np.rad2deg(min_fov)
         self._db_props['star_catalog'] = star_catalog
+        self._db_props['epoch_equinox'] = epoch_equinox
+        self._db_props['epoch_proper_motion'] = epoch_proper_motion
         self._db_props['pattern_stars_per_fov'] = pattern_stars_per_fov
         self._db_props['verification_stars_per_fov'] = verification_stars_per_fov
         self._db_props['star_max_magnitude'] = star_max_magnitude
@@ -1020,6 +1163,8 @@ class Tetra3():
                 - 'RMSE': RMS residual of matched stars in arcseconds.
                 - 'Matches': Number of stars in the image matched to the database.
                 - 'Prob': Probability that the solution is a false-positive.
+                - 'epoch_equinox': The celestial RA/Dec equinox reference epoch.
+                - 'epoch_proper_motion': The epoch the database proper motions were propageted to.
                 - 'T_solve': Time spent searching for a match in milliseconds.
                 - 'T_extract': Time spent exctracting star centroids in milliseconds.
                 - 'RA_target': Right ascension in degrees of the pixel positions passed in
@@ -1136,6 +1281,8 @@ class Tetra3():
                 - 'RMSE': RMS residual of matched stars in arcseconds.
                 - 'Matches': Number of stars in the image matched to the database.
                 - 'Prob': Probability that the solution is a false-positive.
+                - 'epoch_equinox': The celestial RA/Dec equinox reference epoch.
+                - 'epoch_proper_motion': The epoch the database proper motions were propageted to.
                 - 'T_solve': Time spent searching for a match in milliseconds.
                 - 'RA_target': Right ascension in degrees of the pixel positions passed in
                   target_pixel. Not included if target_pixel=None (the default). If a Kx2 array
@@ -1505,11 +1652,14 @@ class Tetra3():
 
                         # Solved in this time
                         t_solve = (precision_timestamp() - t0_solve)*1000
-                        solution_dict = {'RA': ra, 'Dec': dec, 'Roll': roll,
+                        solution_dict = {'RA': ra, 'Dec': dec,
+                                         'Roll': roll,
                                          'FOV': np.rad2deg(fov), 'distortion': k,
                                          'RMSE': residual,
                                          'Matches': num_star_matches,
                                          'Prob': prob_mismatch*num_patterns,
+                                         'epoch_equinox': self._db_props['epoch_equinox'],
+                                         'epoch_proper_motion': self._db_props['epoch_proper_motion'],
                                          'T_solve': t_solve}
 
                         # If we were given target pixel(s), calculate their ra/dec
@@ -1583,13 +1733,14 @@ class Tetra3():
 
                         self._logger.debug(solution_dict)
                         return solution_dict
-        
+
         # Failed to solve, get time and return None
         t_solve = (precision_timestamp() - t0_solve) * 1000
         self._logger.debug('FAIL: Did not find a match to the stars! It took '
                            + str(round(t_solve)) + ' ms.')
-        return {'RA': None, 'Dec': None, 'Roll': None, 'FOV': None, 'RMSE': None, 'Matches': None,
-                'Prob': None, 'T_solve': t_solve}
+        return {'RA': None, 'Dec': None, 'Roll': None, 'FOV': None, 'distortion': None,
+                'RMSE': None, 'Matches': None, 'Prob': None, 'epoch_equinox': None,
+                'epoch_proper_motion': None, 'T_solve': t_solve}
 
     def _get_nearby_stars(self, vector, radius):
         """Get star indices within radius radians of the vector."""
