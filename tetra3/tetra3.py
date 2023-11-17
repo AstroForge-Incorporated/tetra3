@@ -1444,11 +1444,12 @@ class Tetra3():
                 # Get star vectors for all matching hashes
                 all_catalog_pattern_vectors = self.star_table[catalog_matches, 2:5]
                 # Calculate pattern by angles between vectors
-                # implement more accurate angle calculation
                 # this is a bit manual, I could not see a faster way
                 arr1 = np.take(all_catalog_pattern_vectors, upper_tri_index[0], axis=1)
                 arr2 = np.take(all_catalog_pattern_vectors, upper_tri_index[1], axis=1)
                 catalog_pattern_edges = np.sort(norm(arr1 - arr2, axis=-1))
+                # implement more accurate angle calculation
+                catalog_pattern_edges = 2 * np.arcsin(.5 * catalog_pattern_edges)
 
                 all_catalog_largest_edges = catalog_pattern_edges[:, -1]
                 all_catalog_edge_ratios = catalog_pattern_edges[:, :-1] / all_catalog_largest_edges[:, None]
