@@ -107,35 +107,50 @@ from scipy.spatial.distance import pdist, cdist
 
 from PIL import Image, ImageDraw
 
-_MAGIC_RAND = 2654435761
+_MAGIC_RAND = np.uint64(2654435761)
 _supported_databases = ('bsc5', 'hip_main', 'tyc_main')
 
-def _insert_at_index(item, index, table):
-    """Inserts to table with quadratic probing."""
-    max_ind = table.shape[0]
+def _insert_at_index(pattern, hash_index, table):
+    """Inserts to table with quadratic probing. Returns table index where pattern was inserted."""
+    max_ind = np.uint64(table.shape[0])
+    hash_index = np.uint64(hash_index)
     for c in itertools.count():
-        i = (index + c**2) % max_ind
+        c = np.uint64(c)
+        i = (hash_index + c*c) % max_ind
         if all(table[i, :] == 0):
-            table[i, :] = item
-            return
+            table[i, :] = pattern
+            return i
 
 def _get_table_index_from_hash(hash_index, table):
     """Gets from table with quadratic probing, returns list of all possibly matching indices."""
-    max_ind = table.shape[0]
+    max_ind = np.uint64(table.shape[0])
+    hash_index = np.uint64(hash_index)
     found = []
     for c in itertools.count():
-        i = (hash_index + c**2) % max_ind
+        c = np.uint64(c)
+        i = (hash_index + c*c) % max_ind
         if all(table[i, :] == 0):
             return np.array(found)
         else:
             found.append(i)
 
 def _key_to_index(key, bin_factor, max_index):
-    """Get hash index for a given key."""
-    # Get key as a single integer
-    index = sum(int(val) * int(bin_factor)**i for (i, val) in enumerate(key))
-    # Randomise by magic constant and modulo to maximum index
-    return (index * _MAGIC_RAND) % max_index
+    """Get hash index for a given key. Can be length p list or n by p array."""
+    key = np.uint64(key)
+    bin_factor = np.uint64(bin_factor)
+    max_index = np.uint64(max_index)
+    # If p is the length of the key (default 5) and B is the number of bins (default 50,
+    # calculated from max error), this will first give each key a unique index from
+    # 0 to B^p-1, then multiply by large number and modulo to max index to randomise.
+    if key.ndim == 1:
+        hash_indices = np.sum(key*bin_factor**np.arange(len(key), dtype=np.uint64),
+                              dtype=np.uint64)
+    else:
+        hash_indices = np.sum(key*bin_factor**np.arange(key.shape[1], dtype=np.uint64)[None, :],
+                              axis=1, dtype=np.uint64)
+    with np.errstate(over='ignore'):
+        hash_indices = (hash_indices*_MAGIC_RAND) % max_index
+    return hash_indices
 
 def _compute_vectors(centroids, size, fov):
     """Get unit vectors from star centroids (pinhole camera)."""
@@ -1063,16 +1078,10 @@ class Tetra3():
                 # use the radii to uniquely order the pattern, used for future matching
                 pattern = np.array(pattern)[np.argsort(pattern_radii)]
 
-            # use quadratic probing to find an open space in the pattern catalog to insert
-            for index in ((hash_index + offset ** 2) % catalog_length
-                          for offset in itertools.count()):
-                # if the current slot is empty, add the pattern
-                if not pattern_catalog[index][0]:
-                    pattern_catalog[index] = pattern
-                    if save_largest_edge:
-                        # Store as milliradian to better use float16 range
-                        pattern_largest_edge[index] = edge_angles_sorted[-1]*1000
-                    break
+            table_index = _insert_at_index(pattern, hash_index, pattern_catalog)
+            if save_largest_edge:
+                # Store as milliradian to better use float16 range
+                pattern_largest_edge[table_index] = edge_angles_sorted[-1]*1000
 
         self._logger.info('Finished generating database.')
         self._logger.info('Size of uncompressed star table: %i Bytes.' %star_table.nbytes)
@@ -1420,8 +1429,7 @@ class Tetra3():
             hash_code_list = np.unique(hash_code_list, axis=0)
 
             # Calculate hash index for each
-            hash_indices = np.sum(hash_code_list*p_bins**np.arange(pattlen), axis=1)
-            hash_indices = (hash_indices*_MAGIC_RAND) % self.pattern_catalog.shape[0]
+            hash_indices = _key_to_index(hash_code_list, p_bins, self.pattern_catalog.shape[0])
             # iterate over hash code space
             i = 1
             for hash_index in hash_indices:
