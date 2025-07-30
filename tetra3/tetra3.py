@@ -94,6 +94,7 @@ import itertools
 from time import perf_counter as precision_timestamp
 from datetime import datetime
 from numbers import Number
+import math
 
 # External imports:
 import numpy as np
@@ -1033,8 +1034,7 @@ class Tetra3():
             star_catID = star_catID[keep_for_verifying]
         else:
             star_catID = star_catID[keep_for_verifying, :]
-
-        # Create all pattens by calculating and sorting edge ratios and inserting into hash table
+        # Create all patterns by calculating and sorting edge ratios and inserting into hash table
         self._logger.info('Start building catalogue.')
         catalog_length = 2 * len(pattern_list)
         # Determine type to make sure the biggest index will fit, create pattern catalogue
@@ -1392,7 +1392,7 @@ class Tetra3():
 
             # Now find the possible range of edge ratio patterns these four image centroids
             # could correspond to.
-            pattlen = int(np.math.factorial(p_size) / 2 / np.math.factorial(p_size - 2) - 1)
+            pattlen = int(math.factorial(p_size) / 2 / math.factorial(p_size - 2) - 1)
             image_pattern_edge_ratio_min = np.ones(pattlen)
             image_pattern_edge_ratio_max = np.zeros(pattlen)
 

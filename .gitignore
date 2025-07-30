@@ -22,3 +22,9 @@
 # Databases except the default
 *.npz
 !**/default_database.npz
+
+# Virtual environments
+.venv/
+
+
+.DS_Store
