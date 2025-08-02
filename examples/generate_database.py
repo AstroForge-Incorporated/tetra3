@@ -12,6 +12,10 @@ import tetra3
 # Create instance without loading any database.
 t3 = tetra3.Tetra3(load_database=None)
 
-# Generate and save database.
-t3.generate_database(save_as='t3_fov20-30_mag8', max_fov=30, min_fov=20,
-                     star_max_magnitude=8, star_catalog='hip_main')
+# Generate and save database - imager
+t3.generate_database(save_as='tycho_fov4-6_mag9', max_fov=6, min_fov=4,
+                     star_max_magnitude=9, star_catalog='tyc_main')
+
+# Generate and save database - selfie cam
+t3.generate_database(save_as='tycho_fov71-73_mag9', max_fov=73, min_fov=71,
+                     star_max_magnitude=9, star_catalog='tyc_main')

@@ -19,9 +19,11 @@
 # Star catalogue
 /BSC5*
 
-# Databases except the default
+# Databases except the default and astroforge databases
 *.npz
 !**/default_database.npz
+!**/tycho_fov4-6_mag9.npz
+!**/tycho_fov71-73_mag9.npz
 
 # Virtual environments
 .venv/

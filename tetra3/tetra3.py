@@ -336,14 +336,12 @@ class Tetra3():
         self._star_table = None
         self._star_catalog_IDs = None
         self._pattern_catalog = None
-        self._pattern_largest_edge = None
+        # Astroforge update: Not currently implemented in flight software
+        # self._pattern_largest_edge = None
         self._verification_catalog = None
-        self._db_props = {'pattern_mode': None, 'pattern_size': None, 'pattern_bins': None,
-                          'pattern_max_error': None, 'max_fov': None, 'min_fov': None,
-                          'star_catalog': None, 'epoch_equinox': None, 'epoch_proper_motion': None,
-                          'pattern_stars_per_fov': None, 'verification_stars_per_fov': None,
-                          'star_max_magnitude': None, 'simplify_pattern': None,
-                          'range_ra': None, 'range_dec': None, 'presort_patterns': None}
+        self._db_props = {'pattern_size': None, 'pattern_bins': None,
+                          'pattern_max_error': None, 'epoch_equinox': None,
+                          'epoch_proper_motion': None, 'verification_stars_per_fov': None,}
 
         if load_database is not None:
             self._logger.debug('Trying to load database')
@@ -389,10 +387,11 @@ class Tetra3():
         """numpy.ndarray: Catalog of patterns in the database."""
         return self._pattern_catalog
 
-    @property
-    def pattern_largest_edge(self):
-        """numpy.ndarray: Catalog of largest edges for each pattern in milliradian."""
-        return self._pattern_largest_edge
+    # Astroforge update: Not currently implemented in flight software
+    # @property
+    # def pattern_largest_edge(self):
+    #     """numpy.ndarray: Catalog of largest edges for each pattern in milliradian."""
+    #     return self._pattern_largest_edge
 
     @property
     def star_catalog_IDs(self):
@@ -415,29 +414,14 @@ class Tetra3():
         """dict: Dictionary of database properties.
 
         Keys:
-            - 'pattern_mode': Method used to identify star patterns. Is always 'edge_ratio'.
             - 'pattern_size': Number of stars in each pattern.
             - 'pattern_bins': Number of bins per dimension in pattern catalog.
             - 'pattern_max_error': Maximum difference allowed in pattern for a match.
-            - 'max_fov': Maximum camera horizontal field of view (in degrees) the database is built for.
-              This will also be the angular extent of the largest pattern.
-            - 'min_fov': Minimum camera horizontal field of view (in degrees) the database is built for.
               This drives the density of stars in the database, patterns may be smaller than this.
-            - 'pattern_stars_per_fov': Number of stars used for patterns in each region of size
-              'min_fov'.
             - 'verification_stars_per_fov': Number of stars in catalog in each region of size 'min_fov'.
-            - 'star_max_magnitude': Dimmest apparent magnitude of stars in database.
-            - 'star_catalog': Name of the star catalog (e.g. bcs5, hip_main, tyc_main) the database was
-              built from. Returns 'unknown' for old databases where this data was not saved.
             - 'epoch_equinox': Epoch of the 'star_catalog' celestial coordinate system. Usually 2000,
               but could be 1950 for old Bright Star Catalog versions.
             - 'epoch_proper_motion': year to which stellar proper motions have been propagated.
-            - 'simplify_pattern': Indicates if pattern simplification was used when building the database.
-            - 'presort_patterns': Indicates if the pattern indices are sorted by distance to the centroid.
-            - 'range_ra': The portion of the sky in right ascension (min, max) that is in the database
-              (degrees 0 to 360). If None, the whole sky is included.
-            - 'range_dec': The portion of the sky in declination (min, max) that is in the database
-              (degrees -90 to 90). If None, the whole sky is included.
         """
         return self._db_props
 
@@ -463,11 +447,12 @@ class Tetra3():
             self._pattern_catalog = data['pattern_catalog']
             self._star_table = data['star_table']
             props_packed = data['props_packed']
-            try:
-                self._pattern_largest_edge = data['pattern_largest_edge']
-            except KeyError:
-                self._logger.debug('Database does not have largest edge stored, set to None.')
-                self._pattern_largest_edge = None
+            # Astroforge update: Not currently implemented in flight software
+            # try:
+            #     self._pattern_largest_edge = data['pattern_largest_edge']
+            # except KeyError:
+            #     self._logger.debug('Database does not have largest edge stored, set to None.')
+            #     self._pattern_largest_edge = None
             try:
                 self._star_catalog_IDs = data['star_catalog_IDs']
             except KeyError:
@@ -484,22 +469,9 @@ class Tetra3():
                     self._db_props[key] = props_packed['catalog_stars_per_fov'][()]
                     self._logger.debug('Unpacked catalog_stars_per_fov to: ' \
                         + str(self._db_props[key]))
-                elif key == 'star_max_magnitude':
-                    self._db_props[key] = props_packed['star_min_magnitude'][()]
-                    self._logger.debug('Unpacked star_min_magnitude to: ' \
-                        + str(self._db_props[key]))
-                elif key == 'presort_patterns':
-                    self._db_props[key] = False
-                    self._logger.debug('No presort_patterns key, set to False')
-                elif key == 'star_catalog':
-                    self._db_props[key] = 'unknown'
-                    self._logger.debug('No star_catalog key, set to unknown')
                 else:
                     self._db_props[key] = None
                     self._logger.warning('Missing key in database (likely version difference): ' + str(key))
-        if self._db_props['min_fov'] is None:
-            self._logger.debug('No min_fov key, copy from max_fov')
-            self._db_props['min_fov'] = self._db_props['max_fov']
 
     def save_database(self, path):
         """Save database to file.
@@ -521,38 +493,18 @@ class Tetra3():
         self._logger.info('Saving database to: ' + str(path))
 
         # Pack properties as numpy structured array
-        props_packed = np.array((self._db_props['pattern_mode'],
-                                 self._db_props['pattern_size'],
+        props_packed = np.array((self._db_props['pattern_size'],
                                  self._db_props['pattern_bins'],
                                  self._db_props['pattern_max_error'],
-                                 self._db_props['max_fov'],
-                                 self._db_props['min_fov'],
-                                 self._db_props['star_catalog'],
                                  self._db_props['epoch_equinox'],
                                  self._db_props['epoch_proper_motion'],
-                                 self._db_props['pattern_stars_per_fov'],
-                                 self._db_props['verification_stars_per_fov'],
-                                 self._db_props['star_max_magnitude'],
-                                 self._db_props['simplify_pattern'],
-                                 self._db_props['range_ra'],
-                                 self._db_props['range_dec'],
-                                 self._db_props['presort_patterns']),
-                                dtype=[('pattern_mode', 'U64'),
-                                       ('pattern_size', np.uint16),
+                                 self._db_props['verification_stars_per_fov'],),
+                                dtype=[('pattern_size', np.uint16),
                                        ('pattern_bins', np.uint16),
                                        ('pattern_max_error', np.float32),
-                                       ('max_fov', np.float32),
-                                       ('min_fov', np.float32),
-                                       ('star_catalog', 'U64'),
                                        ('epoch_equinox', np.uint16),
                                        ('epoch_proper_motion', np.float32),
-                                       ('pattern_stars_per_fov', np.uint16),
-                                       ('verification_stars_per_fov', np.uint16),
-                                       ('star_max_magnitude', np.float32),
-                                       ('simplify_pattern', bool),
-                                       ('range_ra', np.float32, (2,)),
-                                       ('range_dec', np.float32, (2,)),
-                                       ('presort_patterns', bool)])
+                                       ('verification_stars_per_fov', np.uint16)])
 
         self._logger.debug('Packed properties into: ' + str(props_packed))
         self._logger.debug('Saving as compressed numpy archive')
@@ -560,20 +512,22 @@ class Tetra3():
         to_save = {'star_table': self.star_table,
             'pattern_catalog': self.pattern_catalog,
             'props_packed': props_packed}
-        if self.pattern_largest_edge is not None:
-            to_save['pattern_largest_edge'] = self.pattern_largest_edge
+        # Astroforge update: Not currently implemented in flight software
+        # if self.pattern_largest_edge is not None:
+        #     to_save['pattern_largest_edge'] = self.pattern_largest_edge
         if self.star_catalog_IDs is not None:
             to_save['star_catalog_IDs'] = self.star_catalog_IDs
 
         np.savez_compressed(path, **to_save)
 
     def generate_database(self, max_fov, min_fov=None, save_as=None,
-                          star_catalog='hip_main', pattern_stars_per_fov=10,
-                          verification_stars_per_fov=30, star_max_magnitude=7,
+                          star_catalog='tyc_main', pattern_stars_per_fov=10,
+                          verification_stars_per_fov=30, star_max_magnitude=9,
                           pattern_max_error=.005, simplify_pattern=False,
                           range_ra=None, range_dec=None,
-                          presort_patterns=True, save_largest_edge=False,
-                          multiscale_step=1.5, epoch_proper_motion='now'):
+                          # save_largest_edge=False,
+                          multiscale_step=1.5,
+                          epoch_proper_motion='now'):
         """Create a database and optionally save it to file.
 
         Takes a few minutes for a small (large FOV) database, can take many hours for a large (small FOV) database.
@@ -637,7 +591,7 @@ class Tetra3():
             save_as (str or pathlib.Path, optional): Save catalogue here when finished. Calls
                 :meth:`save_database`.
             star_catalog (string, optional): Abbreviated name of star catalog, one of 'bsc5',
-                'hip_main', or 'tyc_main'. Default 'hip_main'.
+                'hip_main', or 'tyc_main'. Default 'tyc_main'.
             pattern_stars_per_fov (int, optional): Number of stars used for pattern matching in each
                 region of size 'max_fov'. Default 10.
             verification_stars_per_fov (int, optional): Number of stars used for verification of the
@@ -646,19 +600,10 @@ class Tetra3():
                 Default 7.
             pattern_max_error (float, optional): Maximum difference allowed in pattern for a match.
                 Default .005.
-            simplify_pattern (bool, optional): If set to True, the patterns generated have maximum
-                size of FOV/2 from the centre star, and will be generated much faster. If set to
-                False (the default) the maximum separation of all stars in the pattern is FOV.
             range_ra (tuple, optional): Tuple with the range (min_ra, max_ra) in degrees (0 to 360).
                 If set, only stars within the given right ascension will be kept in the database.
             range_dec (tuple, optional): Tuple with the range (min_dec, max_dec) in degrees (-90 to 90).
                 If set, only stars within the give declination will be kept in the database.
-            presort_patterns (bool, optional): If True (the default), all star patterns will be
-                sorted during database generation to avoid doing it when solving. Makes database
-                generation slower but the solver faster.
-            save_largest_edge (bool, optional): If True (default False), the absolute size of each
-                pattern is stored (via its largest edge angle) in a separate array. This makes the
-                database larger but the solver faster.
             multiscale_step (float, optional): Determines the largest ratio between subsequent FOVs
                 that is allowed when generating a multiscale database. Defaults to 1.5. If the ratio
                 max_fov/min_fov is less than sqrt(multiscale_step) a single scale database is built.
@@ -666,12 +611,18 @@ class Tetra3():
                 stellar proper motions are propagated. If 'now' (default), the current year is used.
                 If 'none' or None, star motions are not propagated and this allows catalogue entries
                 without proper motions to be used in the database.
+
+            ASTROFORGE UPDATE: Not currently implemented in flight software
+            save_largest_edge (bool, optional): If True (default False), the absolute size of each
+                pattern is stored (via its largest edge angle) in a separate array. This makes the
+                database larger but the solver faster. 
         """
         self._logger.debug('Got generate pattern catalogue with input: '
                            + str((max_fov, min_fov, save_as, star_catalog, pattern_stars_per_fov,
                                   verification_stars_per_fov, star_max_magnitude,
-                                  pattern_max_error, simplify_pattern,
-                                  range_ra, range_dec, presort_patterns, save_largest_edge,
+                                  pattern_max_error, range_dec, 
+                                  # ASTROFORGE UPDATE: Not currently implemented in flight software
+                                  # save_largest_edge,
                                   multiscale_step, epoch_proper_motion)))
 
         assert star_catalog in _supported_databases, 'Star catalogue name must be one of: ' \
@@ -686,8 +637,8 @@ class Tetra3():
         star_max_magnitude = float(star_max_magnitude)
         pattern_size = 4
         pattern_bins = round(1/4/pattern_max_error)
-        presort_patterns = bool(presort_patterns)
-        save_largest_edge = bool(save_largest_edge)
+        # ASTROFORGE UPDATE: Not currently implemented in flight software
+        # save_largest_edge = bool(save_largest_edge)
         if epoch_proper_motion is None or str(epoch_proper_motion).lower() == 'none':
             epoch_proper_motion = None
             self._logger.debug('Proper motions will not be considered')
@@ -699,7 +650,7 @@ class Tetra3():
         else:
             raise ValueError('epoch_proper_motion value %s is forbidden' % epoch_proper_motion)
 
-        catalog_file_full_pathname = Path(__file__).parent / star_catalog
+        catalog_file_full_pathname = Path(__file__).parent.parent / 'tetra3/data' / star_catalog
         # Add .dat suffix for hip and tyc if not present
         if star_catalog in ('hip_main', 'tyc_main') and not catalog_file_full_pathname.suffix:
             catalog_file_full_pathname = catalog_file_full_pathname.with_suffix('.dat')
@@ -922,8 +873,9 @@ class Tetra3():
             star_table[i, 2:5] = vector
         # Insert all stars in a KD-tree for fast neighbour lookup
         self._logger.info('Trimming database to requested star density.')
-        all_star_vectors = star_table[:, 2:5]
-        vector_kd_tree = KDTree(all_star_vectors)
+        # Astroforge update: only keep the vector columns of the star table (throw out ra and dec)
+        star_table = star_table[:,2:5]
+        vector_kd_tree = KDTree(star_table)
 
         # Bool list of stars, indicating it will be used in the database
         keep_for_patterns = np.full(num_entries, False)
@@ -960,7 +912,7 @@ class Tetra3():
             # Note that each loop just adds stars to the previous version (between old ones)
             # so we can skip all indices already kept
             for star_ind in range(num_entries):
-                vector = all_star_vectors[star_ind, :]
+                vector = star_table[star_ind, :]
                 # Check if any kept stars are within the pattern checking separation
                 within_pattern_separation = vector_kd_tree.query_ball_point(vector,
                     pattern_stars_separation)
@@ -976,7 +928,7 @@ class Tetra3():
             # Clip out table of the kept stars
             pattern_star_table = star_table[keep_at_fov, :]
             # Insert into KD tree for neighbour lookup
-            pattern_kd_tree = KDTree(pattern_star_table[:, 2:5])
+            pattern_kd_tree = KDTree(pattern_star_table)
             # List of stars available (not yet used to create patterns)
             available_stars = [True] * pattern_star_table.shape[0]
             # Index conversion from pattern_star_table to main star_table
@@ -987,7 +939,7 @@ class Tetra3():
                 # Remove star from future consideration
                 available_stars[pattern[0]] = False
                 # Find all neighbours within FOV, keep only those not removed
-                vector = pattern_star_table[pattern[0], 2:5]
+                vector = pattern_star_table[pattern[0]]
                 if simplify_pattern:
                     neighbours = pattern_kd_tree.query_ball_point(vector, pattern_fov/2)
                 else:
@@ -1003,7 +955,7 @@ class Tetra3():
                             self._logger.info('Generated ' + str(len(pattern_list)) + ' patterns so far.')
                     else:
                         # Unpack and measure angle between all vectors
-                        vectors = pattern_star_table[pattern, 2:5]
+                        vectors = pattern_star_table[pattern]
                         dots = np.dot(vectors, vectors.T)
                         if dots.min() > np.cos(pattern_fov):
                             # Maximum angle is within the FOV limit, append with original index
@@ -1016,7 +968,7 @@ class Tetra3():
         verification_stars_separation = .6 * min_fov / np.sqrt(verification_stars_per_fov)
         keep_for_verifying = keep_for_patterns.copy()
         for star_ind in range(1, num_entries):
-            vector = all_star_vectors[star_ind, :]
+            vector = star_table[star_ind, :]
             # Check if any kept stars are within the pattern checking separation
             within_verification_separation = vector_kd_tree.query_ball_point(vector,
                 verification_stars_separation)
@@ -1047,9 +999,10 @@ class Tetra3():
             pattern_catalog = np.zeros((catalog_length, pattern_size), dtype=np.uint32)
         self._logger.info('Catalog size ' + str(pattern_catalog.shape) + ' and type ' + str(pattern_catalog.dtype) + '.')
 
-        if save_largest_edge:
-            pattern_largest_edge = np.zeros(catalog_length, dtype=np.float16)
-            self._logger.info('Storing largest edges as type ' + str(pattern_largest_edge.dtype))
+        # Astroforge update: Not currently implemented in flight software
+        # if save_largest_edge:
+        #     pattern_largest_edge = np.zeros(catalog_length, dtype=np.float16)
+        #     self._logger.info('Storing largest edges as type ' + str(pattern_largest_edge.dtype))
 
         # Indices to extract from dot product matrix (above diagonal)
         upper_tri_index = np.triu_indices(pattern_size, 1)
@@ -1060,7 +1013,7 @@ class Tetra3():
                 self._logger.info('Inserting pattern number: ' + str(index))
 
             # retrieve the vectors of the stars in the pattern
-            vectors = star_table[pattern, 2:5]
+            vectors = star_table[pattern]
 
             # implement more accurate angle calculation
             edge_angles_sorted = np.sort(2 * np.arcsin(.5 * pdist(vectors)))
@@ -1070,18 +1023,18 @@ class Tetra3():
             hash_code = tuple((edge_ratios * pattern_bins).astype(int))
             hash_index = _key_to_index(hash_code, pattern_bins, catalog_length)
 
-            if presort_patterns:
-                # find the centroid, or average position, of the star pattern
-                pattern_centroid = np.mean(vectors, axis=0)
-                # calculate each star's radius, or Euclidean distance from the centroid
-                pattern_radii = cdist(vectors, pattern_centroid[None, :]).flatten()
-                # use the radii to uniquely order the pattern, used for future matching
-                pattern = np.array(pattern)[np.argsort(pattern_radii)]
+            # find the centroid, or average position, of the star pattern
+            pattern_centroid = np.mean(vectors, axis=0)
+            # calculate each star's radius, or Euclidean distance from the centroid
+            pattern_radii = cdist(vectors, pattern_centroid[None, :]).flatten()
+            # use the radii to uniquely order the pattern, used for future matching
+            pattern = np.array(pattern)[np.argsort(pattern_radii)]
 
             table_index = _insert_at_index(pattern, hash_index, pattern_catalog)
-            if save_largest_edge:
-                # Store as milliradian to better use float16 range
-                pattern_largest_edge[table_index] = edge_angles_sorted[-1]*1000
+            # Astroforge update: Not currently implemented in flight software
+            # if save_largest_edge:
+            #     # Store as milliradian to better use float16 range
+            #     pattern_largest_edge[table_index] = edge_angles_sorted[-1]*1000
 
         self._logger.info('Finished generating database.')
         self._logger.info('Size of uncompressed star table: %i Bytes.' %star_table.nbytes)
@@ -1090,24 +1043,15 @@ class Tetra3():
         self._star_table = star_table
         self._star_catalog_IDs = star_catID
         self._pattern_catalog = pattern_catalog
-        if save_largest_edge:
-            self._pattern_largest_edge = pattern_largest_edge
-        self._db_props['pattern_mode'] = 'edge_ratio'
+        # Astroforge update: Not currently implemented in flight software
+        # if save_largest_edge:
+        #     self._pattern_largest_edge = pattern_largest_edge
         self._db_props['pattern_size'] = pattern_size
         self._db_props['pattern_bins'] = pattern_bins
         self._db_props['pattern_max_error'] = pattern_max_error
-        self._db_props['max_fov'] = np.rad2deg(max_fov)
-        self._db_props['min_fov'] = np.rad2deg(min_fov)
-        self._db_props['star_catalog'] = star_catalog
         self._db_props['epoch_equinox'] = epoch_equinox
         self._db_props['epoch_proper_motion'] = epoch_proper_motion
-        self._db_props['pattern_stars_per_fov'] = pattern_stars_per_fov
         self._db_props['verification_stars_per_fov'] = verification_stars_per_fov
-        self._db_props['star_max_magnitude'] = star_max_magnitude
-        self._db_props['simplify_pattern'] = simplify_pattern
-        self._db_props['range_ra'] = range_ra
-        self._db_props['range_dec'] = range_dec
-        self._db_props['presort_patterns'] = presort_patterns
         self._logger.debug(self._db_props)
 
         if save_as is not None:
@@ -1230,7 +1174,7 @@ class Tetra3():
     def solve_from_centroids(self, star_centroids, size, fov_estimate=None, fov_max_error=None,
                              pattern_checking_stars=8, match_radius=.01, match_threshold=1e-3,
                              solve_timeout=None, target_pixel=None, distortion=0,
-                             return_matches=False, return_visual=False):
+                             return_matches=False, return_visual=False, max_fov = 30, min_fov = 20):
         """Solve for the sky location using a list of centroids.
 
         Use :meth:`tetra3.get_centroids_from_image` or your own centroiding algorithm to find an
@@ -1325,7 +1269,7 @@ class Tetra3():
         image_centroids = np.asarray(star_centroids)
         if fov_estimate is None:
             # If no FOV given at all, guess middle of the range for a start
-            fov_initial = np.deg2rad((self._db_props['max_fov'] + self._db_props['min_fov'])/2)
+            fov_initial = np.deg2rad((max_fov + min_fov) / 2)
         else:
             fov_estimate = np.deg2rad(float(fov_estimate))
             fov_initial = fov_estimate
@@ -1354,7 +1298,6 @@ class Tetra3():
         p_size = self._db_props['pattern_size']
         p_bins = self._db_props['pattern_bins']
         p_max_err = self._db_props['pattern_max_error']
-        presorted = self._db_props['presort_patterns']
         upper_tri_index = np.triu_indices(p_size, 1)
 
         image_centroids = image_centroids[:num_stars, :]
@@ -1437,20 +1380,21 @@ class Tetra3():
                 if len(hash_match_inds) == 0:
                     continue
 
-                if self.pattern_largest_edge is not None \
-                        and fov_estimate is not None \
-                        and fov_max_error is not None:
-                    # Can immediately compare FOV to patterns to remove mismatches
-                    largest_edge = self.pattern_largest_edge[hash_match_inds]
-                    fov2 = largest_edge / image_pattern_largest_edge * fov_initial / 1000
-                    keep = abs(fov2 - fov_estimate) < fov_max_error
-                    hash_match_inds = hash_match_inds[keep]
-                    if len(hash_match_inds) == 0:
-                        continue
+                # Astroforge update: not currently implemented in flight software
+                # if self.pattern_largest_edge is not None \
+                #         and fov_estimate is not None \
+                #         and fov_max_error is not None:
+                #     # Can immediately compare FOV to patterns to remove mismatches
+                #     largest_edge = self.pattern_largest_edge[hash_match_inds]
+                #     fov2 = largest_edge / image_pattern_largest_edge * fov_initial / 1000
+                #     keep = abs(fov2 - fov_estimate) < fov_max_error
+                #     hash_match_inds = hash_match_inds[keep]
+                #     if len(hash_match_inds) == 0:
+                #         continue
                 catalog_matches = self.pattern_catalog[hash_match_inds, :]
 
                 # Get star vectors for all matching hashes
-                all_catalog_pattern_vectors = self.star_table[catalog_matches, 2:5]
+                all_catalog_pattern_vectors = self.star_table[catalog_matches]
                 # Calculate pattern by angles between vectors
                 # this is a bit manual, I could not see a faster way
                 arr1 = np.take(all_catalog_pattern_vectors, upper_tri_index[0], axis=1)
@@ -1546,13 +1490,6 @@ class Tetra3():
 
                     # Now get pattern vectors from catalogue, and sort if necessary
                     catalog_pattern_vectors = all_catalog_pattern_vectors[index, :]
-                    if not presorted:
-                        # find the centroid, or average position, of the star pattern
-                        catalog_centroid = np.mean(catalog_pattern_vectors, axis=0)
-                        # calculate each star's radius, or Euclidean distance from the centroid
-                        catalog_radii = cdist(catalog_pattern_vectors, catalog_centroid[None, :]).flatten()
-                        # use the radii to uniquely order the catalog vectors
-                        catalog_pattern_vectors = catalog_pattern_vectors[np.argsort(catalog_radii)]
 
                     # Use the pattern match to find an estimate for the image's rotation matrix
                     rotation_matrix = _find_rotation_matrix(image_pattern_vectors,
@@ -1562,7 +1499,7 @@ class Tetra3():
                     image_center_vector = rotation_matrix[0, :]
                     fov_diagonal_rad = fov * np.sqrt(width**2 + height**2) / width
                     nearby_star_inds = self._get_nearby_stars(image_center_vector, fov_diagonal_rad/2)
-                    nearby_star_vectors = self.star_table[nearby_star_inds, 2:5]
+                    nearby_star_vectors = self.star_table[nearby_star_inds]
 
                     # Derotate nearby stars and get their (undistorted) centroids using coarse fov
                     nearby_star_vectors_derot = np.dot(rotation_matrix, nearby_star_vectors.T).T
@@ -1759,12 +1696,12 @@ class Tetra3():
         range_y = vector[1] + np.array([-max_dist, max_dist])
         range_z = vector[2] + np.array([-max_dist, max_dist])
         # Per axis, find where data is within the range, then combine
-        possible_x = (self.star_table[:, 2] > range_x[0]) & (self.star_table[:, 2] < range_x[1])
-        possible_y = (self.star_table[:, 3] > range_y[0]) & (self.star_table[:, 3] < range_y[1])
-        possible_z = (self.star_table[:, 4] > range_z[0]) & (self.star_table[:, 4] < range_z[1])
+        possible_x = (self.star_table[:, 0] > range_x[0]) & (self.star_table[:, 0] < range_x[1])
+        possible_y = (self.star_table[:, 1] > range_y[0]) & (self.star_table[:, 1] < range_y[1])
+        possible_z = (self.star_table[:, 2] > range_z[0]) & (self.star_table[:, 2] < range_z[1])
         possible = np.nonzero(possible_x & possible_y & possible_z)[0]
         # Find those within the given radius
-        nearby = np.dot(np.asarray(vector), self.star_table[possible, 2:5].T) > np.cos(radius)
+        nearby = np.dot(np.asarray(vector), self.star_table[possible].T) > np.cos(radius)
         return possible[nearby]
 
     def _get_matched_star_data(self, centroid_data, star_indices):
