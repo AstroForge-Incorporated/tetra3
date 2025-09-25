@@ -42,7 +42,7 @@ FOV).
 ### Generating New Databases
 `examples/generate_database.py` generates two different star databases, one for the IDS imager and one for the selfie cam.
 
-To run database generation, first download the `tyc_main.dat` database file from [Box]() and save it to `tetra3/data`.
+To run database generation, first download the `tyc_main.dat` database file from [Box](https://astroforge.app.box.com/file/1997375061499?s=my1mb5in9vj9hwxiyg9rz2gc1ddoq3xt) and save it to `tetra3/data`.
 
 **Important arguments**
 `max_fov, min_fov`: Select an FOV range +/- 1 degree around the true FOV of the camera (this is to provide sufficient error bounds but also to minimize the database size)
