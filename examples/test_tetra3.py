@@ -4,22 +4,31 @@ tetra3/examples/data directory.
 """
 
 import sys
-sys.path.append('..')
+
+sys.path.append("..")
+
+import logging
 
 from PIL import Image
 from pathlib import Path
+
 EXAMPLES_DIR = Path(__file__).parent
 
 import tetra3
 
+# Configure logging to see tetra3 messages
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+
 # Create instance and load the default database, built for 30 to 10 degree field of view.
 # Pass `load_database=None` to not load a database, or to load your own.
-t3 = tetra3.Tetra3(load_database='tycho_fov4-6_mag9')
+t3 = tetra3.Tetra3(load_database="tycho_fov4-6_mag9")
 
 # Path where images are
-path = EXAMPLES_DIR / 'test_images'
-for impath in path.glob('*'):
-    print('Solving for image at: ' + str(impath))
+path = EXAMPLES_DIR / "test_images"
+for impath in path.glob("*"):
+    print("Solving for image at: " + str(impath))
     with Image.open(str(impath)) as img:
         # Here you can add e.g. `fov_estimate`/`fov_max_error` to improve speed or a
         # `distortion` range to search (default assumes undistorted image). There
@@ -28,4 +37,4 @@ for impath in path.glob('*'):
         # You can use `return_images` to get a second return value to check the
         # centroiding process, the key `final_centroids` is especially useful.
         solution = t3.solve_from_image(img, fov_estimate=5.07)
-    print('Solution: ' + str(solution))
+    print("Solution: " + str(solution))

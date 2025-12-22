@@ -1149,11 +1149,12 @@ class Tetra3():
 
         # Run star extraction, passing kwargs along
         t0_extract = precision_timestamp()
-        centr_data = get_centroids_from_image(image, **kwargs)
+        centr_data = get_centroids_from_image(image, logger=self._logger,verification_stars_per_fov=self._db_props['verification_stars_per_fov'], **kwargs)
         t_extract = (precision_timestamp() - t0_extract)*1000
         # If we get a tuple, need to use only first element and then reassemble at return
         if isinstance(centr_data, tuple):
             centroids = centr_data[0]
+
         else:
             centroids = centr_data
         self._logger.debug('Found this many centroids, in time: ' + str((len(centroids), t_extract)))
@@ -1526,8 +1527,8 @@ class Tetra3():
                     prob_mismatch = scipy.stats.binom.cdf(num_extracted_stars - (num_star_matches - 2),
                                                           num_extracted_stars,
                                                           1 - prob_single_star_mismatch)
-                    self._logger.debug("Mismatch probability = %.2e, at FOV = %.5fdeg" \
-                        % (prob_mismatch, np.rad2deg(fov)))
+                    self._logger.debug("Mismatch probability = %.2e / %.2e, at FOV = %.5fdeg" \
+                        % (prob_mismatch,match_threshold, np.rad2deg(fov)))
 
                     if prob_mismatch < match_threshold:
                         # diplay mismatch probability in scientific notation
@@ -1730,11 +1731,17 @@ class Tetra3():
             output['matched_catID'] = self.star_catalog_IDs[star_indices].tolist()
         return output
 
+
+
+file_logger = logging.getLogger(__name__)
+file_logger.setLevel("WARN")
+
+
 def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsample=None,
                              filtsize=25, bg_sub_mode='local_mean', sigma_mode='global_root_square',
                              binary_open=True, centroid_window=None, max_area=100, min_area=5,
                              max_sum=None, min_sum=None, max_axis_ratio=None, max_returned=None,
-                             return_moments=False, return_images=False):
+                             return_moments=False, return_images=False, verification_stars_per_fov=0, logger=None):
     """Extract spot centroids from an image and calculate statistics.
 
     This is a versatile function for finding spots (e.g. stars or satellites) in an image and
@@ -1844,7 +1851,8 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
         `final_centroids`: The original image annotated with green circles for the extracted
         centroids, and red circles for any centroids that were rejected.
     """
-
+    if logger is None:
+        logger = file_logger
     # 1. Ensure image is float np array and 2D:
     raw_image = image.copy()
     image = np.asarray(image, dtype=np.float32)
@@ -1914,6 +1922,7 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
             raise AssertionError('sigma_mode must be string: local_median_abs, local_root_square,'
                                  + ' global_median_abs, or global_root_square')
         image_th = img_std * sigma
+        file_logger.debug(f"Calculated image threshold: {image_th}")
     #if return_images:
     #    images_dict['image_threshold'] = image_th
     # 5. Threshold to find binary mask
@@ -2060,6 +2069,12 @@ def get_centroids_from_image(image, sigma=2, image_th=None, crop=None, downsampl
     if crop:
         extracted[:, 1:3] = extracted[:, 1:3] + np.array([offs_h, offs_w])  # Offset centroid
     # Return results, default just the centroids 
+    centroids = extracted[:, 1:3]
+    brightness = extracted[:, 0]  # get the brightness array
+    logger.info('Centroid pixel locations (x, y):')
+    logger.info(str(centroids[:verification_stars_per_fov, ::-1]))
+    logger.info('Brightness values:')
+    logger.info(str(brightness[:verification_stars_per_fov,]))
     if not any((return_moments, return_images)):
         return extracted[:, 1:3]
     # Otherwise, build list of requested returned items
