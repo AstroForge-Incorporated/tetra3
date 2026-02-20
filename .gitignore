@@ -28,5 +28,7 @@
 # Virtual environments
 .venv/
 
+*.npz
+*.stars
 
 .DS_Store
