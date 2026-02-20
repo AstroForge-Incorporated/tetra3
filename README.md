@@ -38,21 +38,6 @@ A real-world set of images acquired with a FLIR Blackfly S BFS-U3-31S4M-C (Sony 
 binned 2x2) camera and a Fujifilm HF35XA-5M 35mm f/1.9 lens are included as test data (11.4 degrees
 FOV).
 
-## Usage
-### Generating New Databases
-`examples/generate_database.py` generates two different star databases, one for the IDS imager and one for the selfie cam.
-
-To run database generation, first download the `tyc_main.dat` database file from [Box](https://astroforge.app.box.com/file/1997375061499?s=my1mb5in9vj9hwxiyg9rz2gc1ddoq3xt) and save it to `tetra3/data`.
-
-**Important arguments**
-`max_fov, min_fov`: Select an FOV range +/- 1 degree around the true FOV of the camera (this is to provide sufficient error bounds but also to minimize the database size)
-`star_max_magnitude`: Dimmest stars to add into the database. Default set to 9.
-`star_catalog`: Which star database is being used to generate the pattern catalog. Default tycho2 (downloaded from https://cdsarc.u-strasbg.fr/ftp/cats/I/239/).
-
-### Running Star-ID
-`examples/test_tetra3.py` runs the star-ID algorithm on a set of images placed inside `examples/test_images`, using a star database saved into `tetra3/data`. 
-The fov of the camera/image gen used to generate the images must match the fov of the database chosen in this script (see `load_database`). 
-
 ## Astroforge Updates
 1. Cleaned up unused db_props
 2. Removed right ascension, declination angle, and magnitude from star table (values are not used in star_id calculations, algorithm only uses the unit vector)
@@ -73,3 +58,49 @@ exposure_time_s = 0.1
 analog_gain = 10.0
 well_capacity = 15e3
 quantum_efficiency = 0.84
+
+## Usage
+### Generating New Databases
+
+The `tyc_main.dat` star catalogue is stored in `tetra3/data/` via Git LFS. To fetch it:
+
+```bash
+git lfs pull
+```
+
+The original source of this file is [Box](https://astroforge.app.box.com/file/1997375061499?s=my1mb5in9vj9hwxiyg9rz2gc1ddoq3xt).
+
+Then use the `tetra3-generate-db` CLI command:
+
+```bash
+# Imager database (FOV ~5 deg)
+uv run tetra3-generate-db --save-as tycho_fov4-6_mag9 --max-fov 6 --min-fov 4 \
+    --star-max-magnitude 9 --star-catalog tyc_main --epoch-proper-motion 2026
+
+# Selfie cam database (FOV ~72 deg)
+uv run tetra3-generate-db --save-as tycho_fov71-73_mag9 --max-fov 73 --min-fov 71 \
+    --star-max-magnitude 9 --star-catalog tyc_main --epoch-proper-motion 2026
+```
+
+Run `tetra3-generate-db -h` for full usage information.
+
+**Important arguments:**
+- `--max-fov, --min-fov`: Select an FOV range +/- 1 degree around the true FOV of the camera (provides error bounds while minimizing database size)
+- `--star-max-magnitude`: Dimmest stars to add into the database (default: 9)
+- `--star-catalog`: Star catalogue to use: `tyc_main`, `hip_main`, or `BSC5` (default: `tyc_main`)
+- `--epoch-proper-motion`: Epoch year for proper motion propagation (default: now)
+
+### Generating Raw Star Files
+
+The `tetra3-generate-stars` command generates a raw binary `.stars` file for use with the `image-gen` tool in `mono`:
+
+```bash
+tetra3-generate-stars tetra3/data/tyc_main.dat --year 2026 -o tycho_2026.stars
+```
+
+Run `tetra3-generate-stars -h` for full usage information.
+
+### Running Star-ID
+`examples/test_tetra3.py` runs the star-ID algorithm on a set of images placed inside `examples/test_images`, using a star database saved into `tetra3/data`. 
+The fov of the camera/image gen used to generate the images must match the fov of the database chosen in this script (see `load_database`). 
+
