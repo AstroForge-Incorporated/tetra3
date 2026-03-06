@@ -78,8 +78,7 @@ uv run tetra3-generate-db --save-as tycho_fov4-6_mag9 --max-fov 6 --min-fov 4 \
     --star-max-magnitude 9 --star-catalog tyc_main --epoch-proper-motion 2026
 
 # Selfie cam database (FOV ~72 deg)
-uv run tetra3-generate-db --save-as tycho_fov71-73_mag9 --max-fov 73 --min-fov 71 \
-    --star-max-magnitude 9 --star-catalog tyc_main --epoch-proper-motion 2026
+uv run tetra3-generate-db --star-catalog tyc_main --save-as tycho_fov2-45_mag6.npz --min-fov 2 --max-fov 45 --star-max-magnitude 6 --pattern-stars-per-fov 20 --verification-stars-per-fov 40 --epoch-proper-motion 2026
 ```
 
 Run `tetra3-generate-db -h` for full usage information.
